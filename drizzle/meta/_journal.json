@@ -1,0 +1,34 @@
+{
+  "version": "7",
+  "dialect": "mysql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "5",
+      "when": 1775833733738,
+      "tag": "0000_past_mole_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1775833930066,
+      "tag": "0001_simple_vampiro",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1776107693000,
+      "tag": "0002_calendar_events",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1777763000000,
+      "tag": "0003_room_player_seat_position",
+      "breakpoints": true
+    }
+  ]
+}
