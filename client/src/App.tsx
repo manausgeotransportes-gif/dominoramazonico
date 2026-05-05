@@ -57,6 +57,7 @@ function Router() {
       <Route path={"/"} component={Home} />
       <Route path={"/lobby"} component={Lobby} />
       <Route path={"/game/:gameId"} component={GamePage} />
+      <Route path={/^\/game\/([^/]+)\/?$/} component={GamePage} />
       <Route path={"/ranking"} component={Ranking} />
       <Route path={"/friends"} component={Friends} />
       <Route path={"/agenda"} component={Agenda} />

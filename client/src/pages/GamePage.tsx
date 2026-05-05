@@ -15,9 +15,10 @@ export default function GamePage() {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const scorePanelRef = useRef<ScorePanelHandle>(null);
   const startedRoomRef = useRef<number | null>(null);
-  const [, navigate] = useLocation();
-  const roomId = params?.gameId ? parseInt(params.gameId, 10) : NaN;
-  const canUseRoomId = match && Number.isFinite(roomId);
+  const [location, navigate] = useLocation();
+  const routeGameId = params?.gameId ?? location.match(/^\/game\/([^/?#]+)\/?$/)?.[1];
+  const roomId = routeGameId ? parseInt(routeGameId, 10) : NaN;
+  const canUseRoomId = (match || location.startsWith("/game/")) && Number.isFinite(roomId);
   const { isAuthenticated, user } = useAuth();
 
   const leaveRoomMutation = trpc.rooms.leaveRoom.useMutation();
