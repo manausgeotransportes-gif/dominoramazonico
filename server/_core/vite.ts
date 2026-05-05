@@ -6,11 +6,14 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import viteConfig from "../../vite.config";
 
+const dominoMesaPath = path.resolve(process.cwd(), "client", "static", "domino-mesa");
+const sharedPath = path.resolve(process.cwd(), "shared");
+
 export async function setupVite(app: Express, server: Server) {
   // Serve static files for domino-mesa
-  app.use('/domino-mesa', express.static(path.join(import.meta.dirname, '../../client/static/domino-mesa')));
+  app.use('/domino-mesa', express.static(dominoMesaPath));
   // Serve shared game modules referenced by the standalone domino-mesa iframe
-  app.use('/shared', express.static(path.join(import.meta.dirname, '../../shared')));
+  app.use('/shared', express.static(sharedPath));
 
   const serverOptions = {
     middlewareMode: true,
@@ -54,9 +57,9 @@ export async function setupVite(app: Express, server: Server) {
 
 export function serveStatic(app: Express) {
   // Serve static files for domino-mesa
-  app.use('/domino-mesa', express.static(path.join(import.meta.dirname, '../../client/static/domino-mesa')));
+  app.use('/domino-mesa', express.static(dominoMesaPath));
   // Serve shared game modules referenced by the standalone domino-mesa iframe
-  app.use('/shared', express.static(path.join(import.meta.dirname, '../../shared')));
+  app.use('/shared', express.static(sharedPath));
 
   const distPath =
     process.env.NODE_ENV === "development"

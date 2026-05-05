@@ -23,6 +23,77 @@ import {
 
 import type { LocalGameState } from "./localStore";
 import { getRoomByIdLocal, createRoomLocal, joinRoomLocal, getLocalUserById, createGameLocal, setGameLocal, recomputeTeamScores, getTeamIndex, ensureRoomReadyWithBots, getGameByRoomLocal, recordFinishedGame, getGameByIdLocal, appendMessage, recordRoomMatchResultLocal } from "./localStore";
+
+const STANDARD_BOT_SLOTS = [
+  { openId: "bot-padrao-1", name: "Bot Norte", email: "bot-padrao-1@domino.local" },
+  { openId: "bot-padrao-2", name: "Bot Centro", email: "bot-padrao-2@domino.local" },
+  { openId: "bot-padrao-3", name: "Bot Sul", email: "bot-padrao-3@domino.local" },
+];
+
+async function ensureDbBotUser(slotIndex: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Banco indisponível");
+  const normalizedSlot = ((slotIndex % STANDARD_BOT_SLOTS.length) + STANDARD_BOT_SLOTS.length) % STANDARD_BOT_SLOTS.length;
+  const spec = STANDARD_BOT_SLOTS[normalizedSlot];
+  const existing = await db.select().from(users).where(eq(users.openId, spec.openId)).limit(1);
+
+  if (existing[0]) {
+    await db.update(users).set({ name: spec.name, loginMethod: "bot", isOnline: true, isPlaying: true }).where(eq(users.id, existing[0].id));
+    return { ...existing[0], name: spec.name, loginMethod: "bot", isOnline: true, isPlaying: true };
+  }
+
+  await db.insert(users).values({
+    openId: spec.openId,
+    name: spec.name,
+    email: spec.email,
+    loginMethod: "bot",
+    role: "user",
+    isOnline: true,
+    isPlaying: true,
+  });
+
+  const created = await db.select().from(users).where(eq(users.openId, spec.openId)).limit(1);
+  const bot = created[0];
+  if (!bot) throw new Error("Não foi possível criar bot");
+  return bot;
+}
+
+async function ensureDbRoomReadyWithBots(roomId: number, maxPlayers: number) {
+  const db = await getDb();
+  if (!db) return [];
+
+  const seated = await db
+    .select()
+    .from(roomPlayers)
+    .where(eq(roomPlayers.roomId, roomId))
+    .orderBy(asc(roomPlayers.seatPosition));
+  const occupiedPositions = new Set(seated.map((player) => player.seatPosition).filter((position): position is number => typeof position === "number"));
+  const occupiedUserIds = new Set(seated.map((player) => player.userId));
+
+  for (let position = 1; position <= maxPlayers; position += 1) {
+    if (occupiedPositions.has(position)) continue;
+    const bot = await ensureDbBotUser(position - 2);
+    if (occupiedUserIds.has(bot.id)) continue;
+    await db.insert(roomPlayers).values({ roomId, userId: bot.id, seatPosition: position });
+    occupiedPositions.add(position);
+    occupiedUserIds.add(bot.id);
+  }
+
+  await db.update(gameRooms).set({ currentPlayers: maxPlayers, status: "playing" }).where(eq(gameRooms.id, roomId));
+  return db.select().from(roomPlayers).where(eq(roomPlayers.roomId, roomId)).orderBy(asc(roomPlayers.seatPosition));
+}
+
+async function getDbPlayerBotFlags(playerIds: number[]) {
+  const db = await getDb();
+  if (!db) return new Array(playerIds.length).fill(false);
+
+  const flags: boolean[] = [];
+  for (const playerId of playerIds) {
+    const rows = await db.select().from(users).where(eq(users.id, playerId)).limit(1);
+    flags.push((rows[0]?.loginMethod ?? "") === "bot");
+  }
+  return flags;
+}
 function evaluateAnnouncement(actualPoints: number, announcedPoints: number | null) {
   if (actualPoints <= 0) {
     if (announcedPoints !== null && announcedPoints > 0) {
@@ -422,14 +493,17 @@ export async function createOrStartRoomGame(roomId: number, fillBots = false) {
     if (fillBots && !currentRoom.allowBot) return null;
     if (!fillBots && currentRoom.currentPlayers < currentRoom.maxPlayers) return null;
 
-    const seatedPlayers = await db
-      .select()
-      .from(roomPlayers)
-      .where(eq(roomPlayers.roomId, roomId))
-      .orderBy(asc(roomPlayers.seatPosition));
+    const seatedPlayers = fillBots
+      ? await ensureDbRoomReadyWithBots(roomId, currentRoom.maxPlayers)
+      : await db
+          .select()
+          .from(roomPlayers)
+          .where(eq(roomPlayers.roomId, roomId))
+          .orderBy(asc(roomPlayers.seatPosition));
     const playerIds = seatedPlayers.map((player) => player.userId).slice(0, 4);
     if (playerIds.length !== 4) return null;
-    return createGame(roomId, playerIds, new Array(4).fill(false));
+    const isBotPlayer = await getDbPlayerBotFlags(playerIds);
+    return createGame(roomId, playerIds, isBotPlayer);
   }
 
   const room = getRoomByIdLocal(roomId);

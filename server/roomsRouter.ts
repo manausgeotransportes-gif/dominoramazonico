@@ -209,6 +209,9 @@ export const roomsRouter = router({
         if (!roomId) throw new Error("Erro ao criar sala");
 
         await drizzle.insert(roomPlayers).values({ roomId, userId: ctx.user.id, seatPosition: 1 });
+        if (input.allowBot) {
+          await gameService.createOrStartRoomGame(roomId, true);
+        }
         return { roomId, message: "Sala criada com sucesso" };
       } catch (error) {
         if (error instanceof TRPCError) throw error;
@@ -268,7 +271,14 @@ export const roomsRouter = router({
           await gameService.createOrStartRoomGame(room.id, false);
         }
         await persistLocalStoreNow();
-        return { message: "Aguardando na sala", roomId: room.id, position };
+        return {
+          message: room.status === "playing" ? "Partida iniciada" : "Aguardando na sala",
+          roomId: room.id,
+          position,
+          status: room.status,
+          currentPlayers: room.currentPlayers,
+          maxPlayers: room.maxPlayers,
+        };
       }
 
       const room = await db.getRoomById(roomId);
@@ -300,8 +310,18 @@ export const roomsRouter = router({
         .update(rooms)
         .set({ currentPlayers: nextCount, status: nextCount >= room.maxPlayers ? "playing" : room.status })
         .where(eq(rooms.id, roomId));
+      if (nextCount >= room.maxPlayers) {
+        await gameService.createOrStartRoomGame(roomId, false);
+      }
       await ensureDbAutoRoomsAvailable(4);
-      return { message: "Aguardando na sala", roomId, position: desiredPosition };
+      return {
+        message: nextCount >= room.maxPlayers ? "Partida iniciada" : "Aguardando na sala",
+        roomId,
+        position: desiredPosition,
+        status: nextCount >= room.maxPlayers ? "playing" : room.status,
+        currentPlayers: nextCount,
+        maxPlayers: room.maxPlayers,
+      };
     } catch (error) {
       if (error instanceof TRPCError) throw error;
       console.error("Erro ao entrar na sala:", error);

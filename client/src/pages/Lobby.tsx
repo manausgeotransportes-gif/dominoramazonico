@@ -106,6 +106,11 @@ export default function Lobby() {
   const topPlayersQuery = trpc.ranking.getTopPlayers.useQuery(undefined, { enabled: isAuthenticated });
   const publicRoomsQuery = trpc.rooms.listOpenRooms.useQuery({ limit: 60, onlyPublic: true }, { refetchInterval: 3000 });
   const privateRoomsQuery = trpc.rooms.searchPrivateRooms.useQuery(searchQuery, { enabled: roomFilter === "private" });
+  const waitingRoomQuery = trpc.rooms.getRoomById.useQuery(waitingRoom?.roomId ?? 0, {
+    enabled: Boolean(waitingRoom?.roomId),
+    refetchInterval: 2000,
+    retry: false,
+  });
   const friendsQuery = trpc.friends.listFriends.useQuery(undefined, { enabled: isAuthenticated, refetchInterval: 5000 });
   const availableUsersQuery = trpc.friends.listAvailableUsers.useQuery(undefined, { enabled: isAuthenticated, refetchInterval: 5000 });
 
@@ -138,6 +143,14 @@ export default function Lobby() {
 
   const joinRoomMutation = trpc.rooms.joinRoom.useMutation({
     onSuccess: (data) => {
+      const joinedRoomIsReady =
+        data.status === "playing" ||
+        (typeof data.currentPlayers === "number" && typeof data.maxPlayers === "number" && data.currentPlayers >= data.maxPlayers);
+      if (joinedRoomIsReady) {
+        toast.success("Mesa completa. Iniciando a partida.");
+        navigate(`/game/${data.roomId}`);
+        return;
+      }
       toast.success(data.position ? `Aguardando na sala, posição ${data.position}.` : "Aguardando na sala.");
       setWaitingRoom({ roomId: data.roomId, position: data.position ?? null });
       publicRoomsQuery.refetch();
@@ -175,6 +188,16 @@ export default function Lobby() {
     if (rooms.some((room: any) => room.id === selectedRoom.roomId)) return;
     setSelectedRoom(null);
   }, [rooms, selectedRoom]);
+
+  useEffect(() => {
+    const room = waitingRoomQuery.data;
+    if (!waitingRoom || !room) return;
+
+    if (room.status === "playing" || room.currentPlayers >= room.maxPlayers) {
+      toast.success("Mesa completa. Iniciando a partida.");
+      navigate(`/game/${waitingRoom.roomId}`);
+    }
+  }, [navigate, waitingRoom, waitingRoomQuery.data]);
 
   const createConfiguredRoom = (mode: "private" | "bot") => {
     pendingCreateModeRef.current = mode;
@@ -432,24 +455,29 @@ export default function Lobby() {
                     <CardContent className={`py-12 text-center ${theme.muted}`}>Nenhuma sala disponível agora. Crie uma sala ou atualize a lista.</CardContent>
                   </Card>
                 ) : (
-                  rooms.map((room: any, idx: number) => (
+                  rooms.map((room: any, idx: number) => {
+                    const selectedPosition = selectedRoom && selectedRoom.roomId === room.id ? selectedRoom.position : null;
+                    const waitingPosition = waitingRoom && waitingRoom.roomId === room.id ? waitingRoom.position : null;
+
+                    return (
                       <RoomPanel
-                      key={`${room.id}-${idx}`}
-                      room={room}
-                      theme={theme}
-                      selectedPosition={selectedRoom?.roomId === room.id ? selectedRoom.position : null}
-                      waitingPosition={waitingRoom?.roomId === room.id ? waitingRoom.position : null}
-                      isJoining={joinRoomMutation.isPending}
-                      onSelectPosition={(position) =>
-                        setSelectedRoom((current) =>
-                          current?.roomId === room.id && current.position === position
-                            ? null
-                            : { roomId: room.id, position },
-                        )
-                      }
-                      onJoin={() => joinRoomMutation.mutate({ roomId: room.id, position: selectedRoom?.roomId === room.id ? selectedRoom.position ?? undefined : undefined })}
-                    />
-                  ))
+                        key={`${room.id}-${idx}`}
+                        room={room}
+                        theme={theme}
+                        selectedPosition={selectedPosition}
+                        waitingPosition={waitingPosition}
+                        isJoining={joinRoomMutation.isPending}
+                        onSelectPosition={(position) =>
+                          setSelectedRoom((current) =>
+                            current && current.roomId === room.id && current.position === position
+                              ? null
+                              : { roomId: room.id, position },
+                          )
+                        }
+                        onJoin={() => joinRoomMutation.mutate({ roomId: room.id, position: selectedPosition ?? undefined })}
+                      />
+                    );
+                  })
                 )}
               </div>
             </div>
