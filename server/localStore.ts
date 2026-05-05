@@ -403,6 +403,8 @@ function hydratePersistedLocalStore(snapshot: PersistedLocalStore) {
 export async function initializeLocalStorePersistence() {
   if (!isMongoConfigured()) return;
 
+  const dbName = process.env.MONGODB_DB_NAME || "domino";
+
   try {
     isPersistingSuspended = true;
     const db = await getMongoDb();
@@ -410,6 +412,9 @@ export async function initializeLocalStorePersistence() {
 
     if (document?.snapshot) {
       hydratePersistedLocalStore(document.snapshot);
+      console.log(`[LocalStore] Dados carregados do MongoDB (${dbName}.${MONGO_STORE_COLLECTION}).`);
+    } else {
+      console.log(`[LocalStore] MongoDB conectado; criando estado inicial em ${dbName}.${MONGO_STORE_COLLECTION}.`);
     }
   } catch (error) {
     console.error("[LocalStore] Falha ao carregar dados do MongoDB:", error);
@@ -417,7 +422,12 @@ export async function initializeLocalStorePersistence() {
     isPersistingSuspended = false;
     isMongoPersistenceReady = true;
     ensureSeedData();
-    scheduleMongoPersist(createSnapshot());
+    try {
+      await persistLocalStoreToMongo(createSnapshot());
+      console.log(`[LocalStore] Estado salvo no MongoDB (${dbName}.${MONGO_STORE_COLLECTION}).`);
+    } catch (error) {
+      console.error("[LocalStore] Falha ao criar estado inicial no MongoDB:", error);
+    }
   }
 }
 
