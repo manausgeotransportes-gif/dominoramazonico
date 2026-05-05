@@ -28,9 +28,17 @@ function Router() {
       <Route path={"/agenda"} component={Agenda} />
       <Route path={"/admin"} component={AdminPanel} />
       <Route path={"/404"} component={NotFound} />
-      <Route component={NotFound} />
+      <Route component={RouteFallback} />
     </Switch>
   );
+}
+
+function RouteFallback() {
+  const pathname = typeof window !== "undefined" ? window.location.pathname : "";
+  if (/^\/game\/[^/?#]+\/?$/.test(pathname)) {
+    return <GamePage />;
+  }
+  return <NotFound />;
 }
 
 function App() {
