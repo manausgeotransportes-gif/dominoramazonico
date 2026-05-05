@@ -12,45 +12,6 @@ import Ranking from "./pages/Ranking";
 import AdminPanel from "./pages/AdminPanel";
 import Friends from "./pages/Friends";
 import Agenda from "./pages/Agenda";
-import { useEffect } from "react";
-
-function useLogoutOnPageExit() {
-  useEffect(() => {
-    const logoutOnPageExit = () => {
-      // If we set this flag (e.g. during login) skip performing logout on reload
-      try {
-        const skip = window.localStorage.getItem("manus-skip-logout-on-reload");
-        if (skip) {
-          window.localStorage.removeItem("manus-skip-logout-on-reload");
-          return;
-        }
-      } catch {}
-      const localUserId = window.localStorage.getItem("domino_local_user_id");
-      const cachedUser = window.localStorage.getItem("manus-runtime-user-info");
-      if (!localUserId && (!cachedUser || cachedUser === "null")) return;
-
-      const headers: Record<string, string> = { "content-type": "application/json" };
-      if (localUserId) headers["x-local-user-id"] = localUserId;
-
-      try {
-        window.localStorage.removeItem("domino_local_user_id");
-        window.localStorage.removeItem("manus-runtime-user-info");
-      } catch {}
-
-      fetch("/api/trpc/auth.logout", {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ json: null }),
-        credentials: "include",
-        keepalive: true,
-      }).catch(() => {});
-    };
-
-    window.addEventListener("pagehide", logoutOnPageExit);
-    return () => window.removeEventListener("pagehide", logoutOnPageExit);
-  }, []);
-}
-
 function Router() {
   return (
     <Switch>
@@ -69,8 +30,6 @@ function Router() {
 }
 
 function App() {
-  useLogoutOnPageExit();
-
   return (
     <ErrorBoundary>
       <div className="notranslate" translate="no">

@@ -19,7 +19,7 @@ export default function GamePage() {
   const routeGameId = params?.gameId ?? location.match(/^\/game\/([^/?#]+)\/?$/)?.[1];
   const roomId = routeGameId ? parseInt(routeGameId, 10) : NaN;
   const canUseRoomId = (match || location.startsWith("/game/")) && Number.isFinite(roomId);
-  const { isAuthenticated, user } = useAuth();
+  const { isAuthenticated, loading: authLoading, user } = useAuth({ redirectOnUnauthenticated: true, redirectPath: "/" });
 
   const leaveRoomMutation = trpc.rooms.leaveRoom.useMutation();
   const startRoomGameMutation = trpc.games.startRoomGame.useMutation();
@@ -112,12 +112,12 @@ export default function GamePage() {
   }, [syncIframe]);
 
   useEffect(() => {
-    if (!canUseRoomId || !room || startRoomGameMutation.isPending || startedRoomRef.current === roomId) return;
+    if (!canUseRoomId || authLoading || !isAuthenticated || !room || startRoomGameMutation.isPending || startedRoomRef.current === roomId) return;
     const shouldStart = Boolean(room.allowBot) || room.currentPlayers >= room.maxPlayers;
     if (!shouldStart || room.status === "finished" || room.status === "closed") return;
     startedRoomRef.current = roomId;
     startRoomGameMutation.mutate({ roomId, fillBots: Boolean(room.allowBot) });
-  }, [canUseRoomId, room, roomId, startRoomGameMutation]);
+  }, [authLoading, canUseRoomId, isAuthenticated, room, roomId, startRoomGameMutation]);
 
   useEffect(() => {
     if (!canUseRoomId) return;
