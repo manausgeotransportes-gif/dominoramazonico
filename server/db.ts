@@ -7,6 +7,10 @@ let _db: ReturnType<typeof drizzle> | null = null;
 
 // Lazily create the drizzle instance so local tooling can run without a DB.
 export async function getDb() {
+  if (process.env.DATABASE_URL?.startsWith("mongodb")) {
+    return null;
+  }
+
   if (!_db && process.env.DATABASE_URL) {
     try {
       _db = drizzle(process.env.DATABASE_URL);

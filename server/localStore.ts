@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { calculateLevel, calculateWinRate, createDominoes, shuffle, findCarrocaSena, placeDominoOnBoard, createEmptyBoardState, type BoardState, type Domino } from "./gameEngine";
+import { getMongoDb, isMongoConfigured } from "./_core/mongodb";
 
 export type LocalUser = {
   id: number;
@@ -156,6 +157,13 @@ type PersistedLocalStore = {
   calendarEvents: LocalCalendarEvent[];
 };
 
+type MongoLocalStoreDocument = {
+  _id: string;
+  snapshot?: PersistedLocalStore;
+  createdAt?: Date;
+  updatedAt?: Date;
+};
+
 const users = new Map<number, LocalUser>();
 const rooms = new Map<number, LocalRoom>();
 const roomPlayers = new Map<number, Array<number | null>>();
@@ -194,7 +202,12 @@ let autoRoomCursor = 0;
 
 const LOCAL_STORE_DIR = path.resolve(process.cwd(), "data");
 const LOCAL_STORE_FILE = path.join(LOCAL_STORE_DIR, process.env.NODE_ENV === "test" ? "local-store.test.json" : "local-store.json");
+const MONGO_STORE_COLLECTION = "app_state";
+const MONGO_STORE_ID = "local-store";
 let isPersistingSuspended = false;
+let isMongoPersistenceReady = false;
+let mongoPersistTimer: NodeJS.Timeout | null = null;
+let mongoPersistInFlight: Promise<void> | null = null;
 
 function now() {
   return new Date();
@@ -261,10 +274,8 @@ function revivePendingCode(code: PendingCode): PendingCode {
   };
 }
 
-function persistLocalStore() {
-  if (isPersistingSuspended) return;
-
-  const snapshot: PersistedLocalStore = {
+function createSnapshot(): PersistedLocalStore {
+  return {
     version: 1,
     counters: {
       nextUserId,
@@ -287,6 +298,52 @@ function persistLocalStore() {
     pendingCodes: Array.from(pendingCodes.entries()),
     calendarEvents: Array.from(calendarEvents.values()),
   };
+}
+
+async function persistLocalStoreToMongo(snapshot: PersistedLocalStore) {
+  const db = await getMongoDb();
+  if (!db) return;
+
+  await db.collection<MongoLocalStoreDocument>(MONGO_STORE_COLLECTION).updateOne(
+    { _id: MONGO_STORE_ID },
+    {
+      $set: {
+        snapshot,
+        updatedAt: new Date(),
+      },
+      $setOnInsert: {
+        createdAt: new Date(),
+      },
+    },
+    { upsert: true }
+  );
+}
+
+function scheduleMongoPersist(snapshot: PersistedLocalStore) {
+  if (!isMongoPersistenceReady) return;
+
+  if (mongoPersistTimer) {
+    clearTimeout(mongoPersistTimer);
+  }
+
+  mongoPersistTimer = setTimeout(() => {
+    mongoPersistTimer = null;
+    mongoPersistInFlight = persistLocalStoreToMongo(snapshot).catch((error) => {
+      console.error("[LocalStore] Falha ao salvar dados no MongoDB:", error);
+    });
+  }, 100);
+  mongoPersistTimer.unref?.();
+}
+
+function persistLocalStore() {
+  if (isPersistingSuspended) return;
+
+  const snapshot = createSnapshot();
+
+  if (isMongoConfigured()) {
+    scheduleMongoPersist(snapshot);
+    return;
+  }
 
   fs.mkdirSync(LOCAL_STORE_DIR, { recursive: true });
   const tmpFile = `${LOCAL_STORE_FILE}.tmp`;
@@ -300,43 +357,79 @@ function loadPersistedLocalStore() {
   try {
     isPersistingSuspended = true;
     const snapshot = JSON.parse(fs.readFileSync(LOCAL_STORE_FILE, "utf8")) as PersistedLocalStore;
-    if (snapshot.version !== 1) return;
-
-    users.clear();
-    rooms.clear();
-    roomPlayers.clear();
-    games.clear();
-    messages.clear();
-    infractions.length = 0;
-    friendInvites.length = 0;
-    playerStats.clear();
-    pendingCodes.clear();
-    calendarEvents.clear();
-
-    snapshot.users.forEach((user) => users.set(user.id, reviveUser(user)));
-    snapshot.rooms.forEach((room) => rooms.set(room.id, reviveRoom(room)));
-    snapshot.roomPlayers.forEach(([roomId, ids]) => roomPlayers.set(Number(roomId), ids));
-    snapshot.games.forEach((game) => games.set(game.roomId, game));
-    snapshot.messages.forEach(([gameId, gameMessages]) => messages.set(Number(gameId), gameMessages.map(reviveMessage)));
-    snapshot.infractions.forEach((infraction) => infractions.push(reviveInfraction(infraction)));
-    snapshot.friendInvites.forEach((invite) => friendInvites.push(reviveFriendInvite(invite)));
-    snapshot.playerStats.forEach((stats) => playerStats.set(stats.userId, stats));
-    snapshot.pendingCodes.forEach(([email, code]) => pendingCodes.set(email, revivePendingCode(code)));
-    (snapshot.calendarEvents ?? []).forEach((event) => calendarEvents.set(event.id, reviveCalendarEvent(event)));
-
-    nextUserId = snapshot.counters.nextUserId;
-    nextRoomId = snapshot.counters.nextRoomId;
-    nextGameId = snapshot.counters.nextGameId;
-    nextMessageId = snapshot.counters.nextMessageId;
-    nextInfractionId = snapshot.counters.nextInfractionId;
-    nextFriendInviteId = snapshot.counters.nextFriendInviteId;
-    nextCalendarEventId = snapshot.counters.nextCalendarEventId ?? 1;
-    autoRoomCursor = snapshot.counters.autoRoomCursor;
+    hydratePersistedLocalStore(snapshot);
   } catch (error) {
     console.error("[LocalStore] Falha ao carregar dados persistidos:", error);
   } finally {
     isPersistingSuspended = false;
   }
+}
+
+function hydratePersistedLocalStore(snapshot: PersistedLocalStore) {
+  if (snapshot.version !== 1) return;
+
+  users.clear();
+  rooms.clear();
+  roomPlayers.clear();
+  games.clear();
+  messages.clear();
+  infractions.length = 0;
+  friendInvites.length = 0;
+  playerStats.clear();
+  pendingCodes.clear();
+  calendarEvents.clear();
+
+  snapshot.users.forEach((user) => users.set(user.id, reviveUser(user)));
+  snapshot.rooms.forEach((room) => rooms.set(room.id, reviveRoom(room)));
+  snapshot.roomPlayers.forEach(([roomId, ids]) => roomPlayers.set(Number(roomId), ids));
+  snapshot.games.forEach((game) => games.set(game.roomId, game));
+  snapshot.messages.forEach(([gameId, gameMessages]) => messages.set(Number(gameId), gameMessages.map(reviveMessage)));
+  snapshot.infractions.forEach((infraction) => infractions.push(reviveInfraction(infraction)));
+  snapshot.friendInvites.forEach((invite) => friendInvites.push(reviveFriendInvite(invite)));
+  snapshot.playerStats.forEach((stats) => playerStats.set(stats.userId, stats));
+  snapshot.pendingCodes.forEach(([email, code]) => pendingCodes.set(email, revivePendingCode(code)));
+  (snapshot.calendarEvents ?? []).forEach((event) => calendarEvents.set(event.id, reviveCalendarEvent(event)));
+
+  nextUserId = snapshot.counters.nextUserId;
+  nextRoomId = snapshot.counters.nextRoomId;
+  nextGameId = snapshot.counters.nextGameId;
+  nextMessageId = snapshot.counters.nextMessageId;
+  nextInfractionId = snapshot.counters.nextInfractionId;
+  nextFriendInviteId = snapshot.counters.nextFriendInviteId;
+  nextCalendarEventId = snapshot.counters.nextCalendarEventId ?? 1;
+  autoRoomCursor = snapshot.counters.autoRoomCursor;
+}
+
+export async function initializeLocalStorePersistence() {
+  if (!isMongoConfigured()) return;
+
+  try {
+    isPersistingSuspended = true;
+    const db = await getMongoDb();
+    const document = await db?.collection<MongoLocalStoreDocument>(MONGO_STORE_COLLECTION).findOne({ _id: MONGO_STORE_ID });
+
+    if (document?.snapshot) {
+      hydratePersistedLocalStore(document.snapshot);
+    }
+  } catch (error) {
+    console.error("[LocalStore] Falha ao carregar dados do MongoDB:", error);
+  } finally {
+    isPersistingSuspended = false;
+    isMongoPersistenceReady = true;
+    ensureSeedData();
+    scheduleMongoPersist(createSnapshot());
+  }
+}
+
+export async function flushLocalStorePersistence() {
+  if (mongoPersistTimer) {
+    clearTimeout(mongoPersistTimer);
+    mongoPersistTimer = null;
+    mongoPersistInFlight = persistLocalStoreToMongo(createSnapshot()).catch((error) => {
+      console.error("[LocalStore] Falha ao salvar dados no MongoDB:", error);
+    });
+  }
+  await mongoPersistInFlight;
 }
 
 // Função utilitária para testes

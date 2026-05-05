@@ -7,7 +7,7 @@ import { registerOAuthRoutes } from "./oauth";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
-import { cleanupExpiredPrivateRoomsLocal, closeInactiveGamesLocal } from "../localStore";
+import { cleanupExpiredPrivateRoomsLocal, closeInactiveGamesLocal, flushLocalStorePersistence, initializeLocalStorePersistence } from "../localStore";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -29,6 +29,8 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 }
 
 async function startServer() {
+  await initializeLocalStorePersistence();
+
   const app = express();
   const server = createServer(app);
   // Configure body parser with larger size limit for file uploads
@@ -66,6 +68,11 @@ async function startServer() {
     cleanupExpiredPrivateRoomsLocal();
     closeInactiveGamesLocal();
   }, 15_000).unref();
+
+  process.once("SIGTERM", async () => {
+    await flushLocalStorePersistence();
+    server.close(() => process.exit(0));
+  });
 }
 
 startServer().catch(console.error);
