@@ -400,6 +400,39 @@ function hydratePersistedLocalStore(snapshot: PersistedLocalStore) {
   autoRoomCursor = snapshot.counters.autoRoomCursor;
 }
 
+function closeRestoredBotGames() {
+  let changed = false;
+
+  for (const game of games.values()) {
+    const room = rooms.get(game.roomId);
+    const hasBot = game.isBotPlayer.some(Boolean) || Boolean(room?.allowBot);
+    if (!hasBot || (game.status !== "playing" && game.status !== "waiting")) continue;
+
+    game.status = "abandoned";
+    game.announcements = [...(game.announcements ?? []), "Partida com bot encerrada após reinício do servidor."];
+    game.playerIds.forEach((userId) => {
+      const user = users.get(userId);
+      if (user) {
+        user.isPlaying = false;
+        user.updatedAt = now();
+      }
+    });
+
+    if (room) {
+      room.status = "closed";
+      room.currentPlayers = 0;
+      room.updatedAt = now();
+    }
+    roomPlayers.delete(game.roomId);
+    changed = true;
+  }
+
+  if (changed) {
+    ensureAutoRoomsAvailable(4);
+  }
+  return changed;
+}
+
 export async function initializeLocalStorePersistence() {
   if (!isMongoConfigured()) return;
 
@@ -422,6 +455,10 @@ export async function initializeLocalStorePersistence() {
     isPersistingSuspended = false;
     isMongoPersistenceReady = true;
     ensureSeedData();
+    const closedBotGames = closeRestoredBotGames();
+    if (closedBotGames) {
+      console.log("[LocalStore] Partidas com bot antigas foram encerradas após reinício.");
+    }
     try {
       await persistLocalStoreToMongo(createSnapshot());
       console.log(`[LocalStore] Estado salvo no MongoDB (${dbName}.${MONGO_STORE_COLLECTION}).`);

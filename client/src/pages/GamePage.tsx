@@ -40,7 +40,7 @@ export default function GamePage() {
     enabled: canUseRoomId,
     refetchInterval: 2000,
   });
-  const { data: room } = trpc.rooms.getRoomById.useQuery(roomId, {
+  const { data: room, error: roomError } = trpc.rooms.getRoomById.useQuery(roomId, {
     enabled: canUseRoomId,
     refetchInterval: 2000,
   });
@@ -116,6 +116,12 @@ export default function GamePage() {
   useEffect(() => {
     syncIframe();
   }, [syncIframe]);
+
+  useEffect(() => {
+    if (!roomError) return;
+    toast.error("Esta sala foi encerrada. Voltando ao lobby.");
+    navigate("/lobby");
+  }, [navigate, roomError]);
 
   useEffect(() => {
     if (!canUseRoomId || authLoading || !isAuthenticated || !room || startRoomGameMutation.isPending || startedRoomRef.current === roomId) return;
