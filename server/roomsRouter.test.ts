@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { appRouter } from "./routers";
 import type { TrpcContext } from "./_core/context";
-import { addLocalUserForTest, getRoomPlayersLocal } from "./localStore";
+import { addLocalUserForTest, getGameByRoomLocal, getRoomByIdLocal, getRoomPlayersLocal } from "./localStore";
 
 type AuthenticatedUser = NonNullable<TrpcContext["user"]>;
 
@@ -34,6 +34,26 @@ function createAuthContext(userId: number = 1): { ctx: TrpcContext; clearedCooki
   };
 
   return { ctx, clearedCookies };
+}
+
+function addRoomTestUser(id: number, prefix = "room-test") {
+  const now = new Date();
+  addLocalUserForTest({
+    id,
+    openId: `${prefix}-${id}`,
+    email: `${prefix}-${id}@example.com`,
+    name: `Jogador ${id}`,
+    loginMethod: "test",
+    passwordHash: null,
+    role: "user",
+    isOnline: true,
+    isPlaying: false,
+    blockedUntil: null,
+    blockReason: null,
+    createdAt: now,
+    updatedAt: now,
+    lastSignedIn: now,
+  });
 }
 
 describe("roomsRouter", () => {
@@ -159,6 +179,57 @@ describe("roomsRouter", () => {
       code: "BAD_REQUEST",
       message: "Selecione uma posição para entrar na sala",
     });
+  });
+
+  it("permite trocar de posição na mesma sala sem duplicar o jogador", async () => {
+    const baseId = 80_000 + Math.floor(Math.random() * 10_000);
+    addRoomTestUser(baseId, "move-owner");
+
+    const caller = appRouter.createCaller(createAuthContext(baseId).ctx);
+    const room = await caller.rooms.createRoom({ name: `Sala troca ${baseId}`, isPrivate: true, allowBot: false });
+
+    await caller.rooms.joinRoom({ roomId: room.roomId, position: 3 });
+
+    const players = getRoomPlayersLocal(room.roomId).filter((item) => item.userId === baseId);
+    expect(players).toHaveLength(1);
+    expect(players[0].seatPosition).toBe(3);
+  });
+
+  it("move o jogador para outra sala e libera a sala anterior automaticamente", async () => {
+    const baseId = 100_000 + Math.floor(Math.random() * 10_000);
+    addRoomTestUser(baseId, "switch-owner");
+    addRoomTestUser(baseId + 1, "switch-player");
+    addRoomTestUser(baseId + 2, "switch-owner-b");
+
+    const owner = appRouter.createCaller(createAuthContext(baseId).ctx);
+    const ownerB = appRouter.createCaller(createAuthContext(baseId + 2).ctx);
+    const player = appRouter.createCaller(createAuthContext(baseId + 1).ctx);
+    const firstRoom = await owner.rooms.createRoom({ name: `Sala origem ${baseId}`, isPrivate: true, allowBot: false });
+    const secondRoom = await ownerB.rooms.createRoom({ name: `Sala destino ${baseId}`, isPrivate: true, allowBot: false });
+
+    await player.rooms.joinRoom({ roomId: firstRoom.roomId, position: 2 });
+    await player.rooms.joinRoom({ roomId: secondRoom.roomId, position: 3 });
+
+    expect(getRoomPlayersLocal(firstRoom.roomId).some((item) => item.userId === baseId + 1)).toBe(false);
+    const secondRoomPlayers = getRoomPlayersLocal(secondRoom.roomId).filter((item) => item.userId === baseId + 1);
+    expect(secondRoomPlayers).toHaveLength(1);
+    expect(secondRoomPlayers[0].seatPosition).toBe(3);
+  });
+
+  it("inicia a partida quando quatro jogadores entram na mesma sala", async () => {
+    const baseId = 120_000 + Math.floor(Math.random() * 10_000);
+    for (let index = 0; index < 4; index += 1) addRoomTestUser(baseId + index, "full-room");
+
+    const owner = appRouter.createCaller(createAuthContext(baseId).ctx);
+    const room = await owner.rooms.createRoom({ name: `Sala completa ${baseId}`, isPrivate: true, allowBot: false });
+
+    for (let index = 1; index < 4; index += 1) {
+      const player = appRouter.createCaller(createAuthContext(baseId + index).ctx);
+      await player.rooms.joinRoom({ roomId: room.roomId, position: index + 1 });
+    }
+
+    expect(getRoomByIdLocal(room.roomId)?.status).toBe("playing");
+    expect(getGameByRoomLocal(room.roomId)).not.toBeNull();
   });
 
   describe("listOpenRooms", () => {

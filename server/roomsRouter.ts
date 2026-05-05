@@ -10,6 +10,7 @@ import {
   createRoomLocal,
   getRoomByIdLocal,
   getRoomPlayersLocal,
+  getWaitingRoomForUserLocal,
   joinRoomLocal,
   leaveWaitingRoomsForUserLocal,
   leaveRoomLocal,
@@ -60,6 +61,29 @@ async function cleanupDbWaitingRoomsForUser(userId: number, exceptRoomId?: numbe
       })
       .where(eq(rooms.id, membership.roomId));
   }
+}
+
+async function getDbWaitingRoomForUser(userId: number) {
+  const drizzle = await db.getDb();
+  if (!drizzle) return null;
+
+  const memberships = await drizzle.select().from(roomPlayers).where(eq(roomPlayers.userId, userId));
+  const waitingMemberships = [];
+  for (const membership of memberships) {
+    const room = await db.getRoomById(membership.roomId);
+    if (room?.status === "waiting") waitingMemberships.push({ membership, room });
+  }
+
+  waitingMemberships.sort((a, b) => {
+    const aTime = a.membership.joinedAt?.getTime?.() ?? 0;
+    const bTime = b.membership.joinedAt?.getTime?.() ?? 0;
+    return bTime - aTime;
+  });
+
+  const current = waitingMemberships[0];
+  if (!current) return null;
+  await cleanupDbWaitingRoomsForUser(userId, current.room.id);
+  return { ...current.room, position: current.membership.seatPosition };
 }
 
 export async function cleanupWaitingRoomsForUser(userId: number, exceptRoomId?: number) {
@@ -258,6 +282,17 @@ export const roomsRouter = router({
     }
   }),
 
+  getMyWaitingRoom: protectedProcedure.query(async ({ ctx }) => {
+    try {
+      const drizzle = await db.getDb();
+      if (!drizzle) return getWaitingRoomForUserLocal(ctx.user.id);
+      return getDbWaitingRoomForUser(ctx.user.id);
+    } catch (error) {
+      console.error("Erro ao buscar sala aguardada:", error);
+      throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Erro ao buscar sala aguardada" });
+    }
+  }),
+
   joinRoom: protectedProcedure.input(joinRoomInput).mutation(async ({ ctx, input }) => {
     try {
       const { roomId, position } = normalizeJoinInput(input);
@@ -283,10 +318,11 @@ export const roomsRouter = router({
 
       const room = await db.getRoomById(roomId);
       if (!room) throw new TRPCError({ code: "NOT_FOUND", message: "Sala não encontrada" });
-      if (room.currentPlayers >= room.maxPlayers) throw new TRPCError({ code: "BAD_REQUEST", message: "Sala está cheia" });
+      if (room.status !== "waiting") throw new TRPCError({ code: "BAD_REQUEST", message: "Esta sala já iniciou" });
 
       await cleanupDbWaitingRoomsForUser(ctx.user.id, roomId);
 
+      const currentPlayers = await drizzle.select().from(roomPlayers).where(eq(roomPlayers.roomId, roomId));
       const existing = await drizzle
         .select()
         .from(roomPlayers)
@@ -294,10 +330,25 @@ export const roomsRouter = router({
         .limit(1);
 
       if (existing.length > 0) {
-        return { message: "Você já está nesta sala", roomId, position: existing[0].seatPosition };
+        const desiredPosition = position ?? existing[0].seatPosition;
+        if (desiredPosition !== existing[0].seatPosition) {
+          if (currentPlayers.some((player) => player.userId !== ctx.user.id && player.seatPosition === desiredPosition)) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Esta posição já está ocupada" });
+          }
+          await drizzle.update(roomPlayers).set({ seatPosition: desiredPosition }).where(eq(roomPlayers.id, existing[0].id));
+        }
+        const updatedPlayers = await drizzle.select().from(roomPlayers).where(eq(roomPlayers.roomId, roomId));
+        return {
+          message: "Posição atualizada",
+          roomId,
+          position: desiredPosition,
+          status: room.status,
+          currentPlayers: updatedPlayers.length,
+          maxPlayers: room.maxPlayers,
+        };
       }
 
-      const currentPlayers = await drizzle.select().from(roomPlayers).where(eq(roomPlayers.roomId, roomId));
+      if (currentPlayers.length >= room.maxPlayers) throw new TRPCError({ code: "BAD_REQUEST", message: "Sala está cheia" });
       const desiredPosition = position ?? getFirstOpenPosition(currentPlayers, room.maxPlayers);
       if (!desiredPosition) throw new TRPCError({ code: "BAD_REQUEST", message: "Sala está cheia" });
       if (currentPlayers.some((player) => player.seatPosition === desiredPosition)) {
@@ -305,7 +356,7 @@ export const roomsRouter = router({
       }
 
       await drizzle.insert(roomPlayers).values({ roomId, userId: ctx.user.id, seatPosition: desiredPosition });
-      const nextCount = room.currentPlayers + 1;
+      const nextCount = currentPlayers.length + 1;
       await drizzle
         .update(rooms)
         .set({ currentPlayers: nextCount, status: nextCount >= room.maxPlayers ? "playing" : room.status })

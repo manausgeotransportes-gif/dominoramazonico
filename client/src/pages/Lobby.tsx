@@ -83,6 +83,7 @@ function cleanRoomName(name: string) {
 
 export default function Lobby() {
   const { user, isAuthenticated } = useAuth({ redirectOnUnauthenticated: true, redirectPath: "/" });
+  const utils = trpc.useUtils();
   const [, navigate] = useLocation();
   const pendingCreateModeRef = useRef<"private" | "bot">("private");
   const [roomName, setRoomName] = useState("");
@@ -106,6 +107,11 @@ export default function Lobby() {
   const topPlayersQuery = trpc.ranking.getTopPlayers.useQuery(undefined, { enabled: isAuthenticated });
   const publicRoomsQuery = trpc.rooms.listOpenRooms.useQuery({ limit: 60, onlyPublic: true }, { refetchInterval: 3000 });
   const privateRoomsQuery = trpc.rooms.searchPrivateRooms.useQuery(searchQuery, { enabled: roomFilter === "private" });
+  const myWaitingRoomQuery = trpc.rooms.getMyWaitingRoom.useQuery(undefined, {
+    enabled: isAuthenticated,
+    refetchInterval: 3000,
+    retry: false,
+  });
   const waitingRoomQuery = trpc.rooms.getRoomById.useQuery(waitingRoom?.roomId ?? 0, {
     enabled: Boolean(waitingRoom?.roomId),
     refetchInterval: 2000,
@@ -153,6 +159,7 @@ export default function Lobby() {
       }
       toast.success(data.position ? `Aguardando na sala, posição ${data.position}.` : "Aguardando na sala.");
       setWaitingRoom({ roomId: data.roomId, position: data.position ?? null });
+      utils.rooms.getMyWaitingRoom.invalidate();
       publicRoomsQuery.refetch();
       privateRoomsQuery.refetch();
       setSelectedRoom(null);
@@ -188,6 +195,15 @@ export default function Lobby() {
     if (rooms.some((room: any) => room.id === selectedRoom.roomId)) return;
     setSelectedRoom(null);
   }, [rooms, selectedRoom]);
+
+  useEffect(() => {
+    const room = myWaitingRoomQuery.data;
+    if (!room) return;
+    setWaitingRoom((current) => {
+      if (current?.roomId === room.id && current.position === room.position) return current;
+      return { roomId: room.id, position: room.position ?? null };
+    });
+  }, [myWaitingRoomQuery.data]);
 
   useEffect(() => {
     const room = waitingRoomQuery.data;
@@ -466,14 +482,14 @@ export default function Lobby() {
                         theme={theme}
                         selectedPosition={selectedPosition}
                         waitingPosition={waitingPosition}
+                        currentUserId={user?.id ?? null}
                         isJoining={joinRoomMutation.isPending}
-                        onSelectPosition={(position) =>
-                          setSelectedRoom((current) =>
-                            current && current.roomId === room.id && current.position === position
-                              ? null
-                              : { roomId: room.id, position },
-                          )
-                        }
+                        onSelectPosition={(position) => {
+                          if (joinRoomMutation.isPending) return;
+                          setSelectedRoom({ roomId: room.id, position });
+                          if (waitingRoom?.roomId === room.id && waitingRoom.position === position) return;
+                          joinRoomMutation.mutate({ roomId: room.id, position });
+                        }}
                         onJoin={() => joinRoomMutation.mutate({ roomId: room.id, position: selectedPosition ?? undefined })}
                       />
                     );
@@ -540,6 +556,7 @@ function RoomPanel({
   theme,
   selectedPosition,
   waitingPosition,
+  currentUserId,
   isJoining,
   onSelectPosition,
   onJoin,
@@ -548,6 +565,7 @@ function RoomPanel({
   theme: typeof APPEARANCES.light;
   selectedPosition: number | null;
   waitingPosition: number | null;
+  currentUserId: number | null;
   isJoining: boolean;
   onSelectPosition: (position: number) => void;
   onJoin: () => void;
@@ -581,6 +599,7 @@ function RoomPanel({
             {slots.map((player: any, index) => {
               const position = index + 1;
               const filled = Boolean(player);
+              const filledByCurrentUser = filled && player?.userId === currentUserId;
               const selected = selectedPosition === position;
               const waiting = waitingPosition === position;
               const pairLabel = position === 1 || position === 3 ? "Dupla 1" : "Dupla 2";
@@ -593,7 +612,7 @@ function RoomPanel({
                 aria-label={label}
                 aria-pressed={selected}
                 title={label}
-                disabled={filled || isFull || isWaitingHere}
+                disabled={isJoining || isFull || (filled && !filledByCurrentUser)}
                 onClick={() => {
                   onSelectPosition(position);
                 }}
@@ -624,7 +643,7 @@ function RoomPanel({
         </div>
 
           <Button className="mt-3 h-10 w-full bg-emerald-600 font-semibold hover:bg-emerald-500" disabled={isJoining || isFull || isWaitingHere || !selectedSlotAvailable} onClick={onJoin}>
-          {isWaitingHere ? "Você está aguardando aqui" : isFull ? "Mesa cheia" : isJoining ? "Aguardando..." : selectedPosition ? `Aguardar na posição ${selectedPosition}` : "Selecione uma posição"}
+          {isWaitingHere ? "Você está aguardando aqui" : isFull ? "Mesa cheia" : isJoining ? "Aguardando..." : selectedPosition ? `Confirmar posição ${selectedPosition}` : "Clique em uma posição"}
         </Button>
       </CardContent>
     </Card>

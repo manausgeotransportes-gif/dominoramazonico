@@ -883,12 +883,38 @@ export function getRoomPlayersLocal(roomId: number) {
   });
 }
 
+export function getWaitingRoomForUserLocal(userId: number) {
+  for (const [roomId, room] of rooms.entries()) {
+    if (room.status !== "waiting") continue;
+    const seats = normalizeRoomSeats(roomId);
+    const seatIndex = seats.indexOf(userId);
+    if (seatIndex < 0) continue;
+    return { ...room, position: seatIndex + 1 };
+  }
+  return null;
+}
+
 export function joinRoomLocal(roomId: number, userId: number, requestedPosition?: number | null) {
   const room = rooms.get(roomId);
   if (!room) throw new Error("Sala não encontrada");
+  if (room.status !== "waiting") throw new Error("Esta sala já iniciou");
   leaveWaitingRoomsForUserLocal(userId, roomId);
   const current = normalizeRoomSeats(roomId);
-  if (current.includes(userId)) return room;
+  const existingIndex = current.indexOf(userId);
+  if (existingIndex >= 0) {
+    const nextIndex = requestedPosition ? requestedPosition - 1 : existingIndex;
+    if (nextIndex < 0 || nextIndex >= room.maxPlayers) throw new Error("Posição inválida");
+    if (nextIndex !== existingIndex) {
+      if (current[nextIndex]) throw new Error("Esta posição já está ocupada");
+      current[existingIndex] = null;
+      current[nextIndex] = userId;
+      roomPlayers.set(roomId, current);
+      room.currentPlayers = countOccupiedSeats(current);
+      room.updatedAt = now();
+      persistLocalStore();
+    }
+    return room;
+  }
   if (countOccupiedSeats(current) >= room.maxPlayers) throw new Error("Sala está cheia");
   const positionIndex = requestedPosition ? requestedPosition - 1 : current.findIndex((id) => !id);
   if (positionIndex < 0 || positionIndex >= room.maxPlayers) throw new Error("Posição inválida");
