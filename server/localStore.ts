@@ -442,6 +442,18 @@ export async function flushLocalStorePersistence() {
   await mongoPersistInFlight;
 }
 
+export async function persistLocalStoreNow() {
+  if (isPersistingSuspended) return;
+  const snapshot = createSnapshot();
+
+  if (isMongoConfigured()) {
+    await persistLocalStoreToMongo(snapshot);
+    return;
+  }
+
+  persistLocalStore();
+}
+
 // Função utilitária para testes
 export function addLocalUserForTest(user: LocalUser) {
   users.set(user.id, user);

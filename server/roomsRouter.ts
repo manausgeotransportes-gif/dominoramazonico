@@ -13,6 +13,7 @@ import {
   leaveWaitingRoomsForUserLocal,
   leaveRoomLocal,
   listOpenRoomsLocal,
+  persistLocalStoreNow,
   searchPrivateRoomsLocal,
 } from "./localStore";
 
@@ -177,6 +178,7 @@ export const roomsRouter = router({
             allowBot: input.allowBot,
             createdBy: ctx.user.id,
           });
+          await persistLocalStoreNow();
           return { roomId: room.id, message: "Sala criada com sucesso" };
         }
 
@@ -375,6 +377,7 @@ export const roomsRouter = router({
         const candidate = listOpenRoomsLocal(100).find((room) => !room.isPrivate && room.currentPlayers < room.maxPlayers);
         if (candidate) {
           const room = joinRoomLocal(candidate.id, ctx.user.id);
+          await persistLocalStoreNow();
           return { roomId: room.id, action: "joined" as const };
         }
         const created = createRoomLocal({
@@ -383,6 +386,7 @@ export const roomsRouter = router({
           allowBot: false,
           createdBy: ctx.user.id,
         });
+        await persistLocalStoreNow();
         return { roomId: created.id, action: "created" as const };
       }
 

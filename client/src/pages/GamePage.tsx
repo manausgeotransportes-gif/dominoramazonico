@@ -22,7 +22,12 @@ export default function GamePage() {
   const { isAuthenticated, loading: authLoading, user } = useAuth({ redirectOnUnauthenticated: true, redirectPath: "/" });
 
   const leaveRoomMutation = trpc.rooms.leaveRoom.useMutation();
-  const startRoomGameMutation = trpc.games.startRoomGame.useMutation();
+  const startRoomGameMutation = trpc.games.startRoomGame.useMutation({
+    onError: (error) => {
+      startedRoomRef.current = null;
+      toast.error(error.message || "Não foi possível iniciar a partida.");
+    },
+  });
   const playMoveMutation = trpc.games.playMove.useMutation();
   const finishRoomMatchMutation = trpc.games.finishRoomMatch.useMutation({
     onSuccess: () => {
@@ -118,15 +123,6 @@ export default function GamePage() {
     startedRoomRef.current = roomId;
     startRoomGameMutation.mutate({ roomId, fillBots: Boolean(room.allowBot) });
   }, [authLoading, canUseRoomId, isAuthenticated, room, roomId, startRoomGameMutation]);
-
-  useEffect(() => {
-    if (!canUseRoomId) return;
-    const leaveOnClose = () => {
-      leaveRoomMutation.mutate(roomId);
-    };
-    window.addEventListener("pagehide", leaveOnClose);
-    return () => window.removeEventListener("pagehide", leaveOnClose);
-  }, [canUseRoomId, leaveRoomMutation, roomId]);
 
   useEffect(() => {
     const updateViewportHeight = () => {

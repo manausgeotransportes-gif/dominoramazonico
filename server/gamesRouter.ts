@@ -2,6 +2,7 @@ import { z } from "zod";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
 import * as gameService from "./gameService";
 import { TRPCError } from "@trpc/server";
+import { persistLocalStoreNow } from "./localStore";
 
 export const gamesRouter = router({
   createGame: protectedProcedure
@@ -17,6 +18,7 @@ export const gamesRouter = router({
       if (!gameState) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "Erro ao criar partida" });
       }
+      await persistLocalStoreNow();
       return gameState;
     }),
 
@@ -27,6 +29,7 @@ export const gamesRouter = router({
       if (!gameState) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "Não foi possível iniciar a partida" });
       }
+      await persistLocalStoreNow();
       return gameState;
     }),
 
@@ -35,7 +38,9 @@ export const gamesRouter = router({
     if (!gameState) {
       throw new TRPCError({ code: "NOT_FOUND", message: "Partida não encontrada" });
     }
-    return gameService.startGame(gameState);
+    const started = await gameService.startGame(gameState);
+    await persistLocalStoreNow();
+    return started;
   }),
 
   getGameState: publicProcedure.input(z.number()).query(async ({ input: gameId }) => {
@@ -75,6 +80,7 @@ export const gamesRouter = router({
       if (!result.isValid) {
         throw new TRPCError({ code: "BAD_REQUEST", message: result.error || "Jogada inválida" });
       }
+      await persistLocalStoreNow();
       return result.gameState;
     }),
 
@@ -89,6 +95,7 @@ export const gamesRouter = router({
       if (!result.isValid) {
         throw new TRPCError({ code: "BAD_REQUEST", message: result.error || "Passada inválida" });
       }
+      await persistLocalStoreNow();
       return result.gameState;
     }),
 
@@ -99,6 +106,7 @@ export const gamesRouter = router({
       if (!result.success) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "Não foi possível registrar o fim da partida" });
       }
+      await persistLocalStoreNow();
       return result;
     }),
 });

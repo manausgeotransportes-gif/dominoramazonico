@@ -13,7 +13,7 @@ import { adminRouter } from "./adminRouter";
 import { friendsRouter } from "./friendsRouter";
 import { scoreRouter } from "./scoreRouter";
 import { calendarRouter } from "./calendarRouter";
-import { getLocalUserById, loginLocalUser, loginPasswordUser, logoutLocalUser, registerCredentialUser, requestEmailCode, verifyEmailCode, updateLocalUserProfile } from "./localStore";
+import { getLocalUserById, loginLocalUser, loginPasswordUser, logoutLocalUser, persistLocalStoreNow, registerCredentialUser, requestEmailCode, verifyEmailCode, updateLocalUserProfile } from "./localStore";
 import { getDb, updateUserProfile } from "./db";
 import { users } from "../drizzle/schema";
 import { eq } from "drizzle-orm";
@@ -29,8 +29,9 @@ export const appRouter = router({
     }),
     localLogin: publicProcedure
       .input(z.object({ name: z.string().min(2).max(50), email: z.string().email().optional() }))
-      .mutation(({ input }) => {
+      .mutation(async ({ input }) => {
         const user = loginLocalUser(input.name, input.email ?? null);
+        await persistLocalStoreNow();
         return { user };
       }),
     registerPassword: publicProcedure
@@ -39,8 +40,9 @@ export const appRouter = router({
         email: z.string().email(),
         password: z.string().min(4).max(100),
       }))
-      .mutation(({ input }) => {
+      .mutation(async ({ input }) => {
         const user = registerCredentialUser(input.name, input.email, input.password);
+        await persistLocalStoreNow();
         return { user };
       }),
     loginPassword: publicProcedure
@@ -48,8 +50,9 @@ export const appRouter = router({
         email: z.string().email(),
         password: z.string().min(4).max(100),
       }))
-      .mutation(({ input }) => {
+      .mutation(async ({ input }) => {
         const user = loginPasswordUser(input.email, input.password);
+        await persistLocalStoreNow();
         return { user };
       }),
     requestEmailCode: publicProcedure
@@ -57,8 +60,9 @@ export const appRouter = router({
       .mutation(({ input }) => requestEmailCode(input.email)),
     verifyEmailCode: publicProcedure
       .input(z.object({ email: z.string().email(), code: z.string().min(1).max(10), name: z.string().min(2).max(50).optional() }))
-      .mutation(({ input }) => {
+      .mutation(async ({ input }) => {
         const user = verifyEmailCode(input.email, input.code, input.name);
+        await persistLocalStoreNow();
         return { user };
       }),
     updateProfile: protectedProcedure

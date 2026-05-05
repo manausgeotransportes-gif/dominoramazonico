@@ -26,6 +26,10 @@ export async function getMongoClient() {
 
   connecting ??= MongoClient.connect(uri, {
     appName: process.env.MONGODB_APP_NAME || "domino",
+  }).catch((error) => {
+    connecting = null;
+    client = null;
+    throw error;
   });
 
   client = await connecting;
