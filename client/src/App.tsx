@@ -2,7 +2,7 @@ import GamePage from "./pages/GamePage";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/NotFound";
-import { Route, Switch, useLocation } from "wouter";
+import { Route, Switch } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import DevAccessBlocker from "./components/DevAccessBlocker";
@@ -13,8 +13,8 @@ import AdminPanel from "./pages/AdminPanel";
 import Friends from "./pages/Friends";
 import Agenda from "./pages/Agenda";
 function Router() {
-  const [location] = useLocation();
-  if (/^\/game\/[^/?#]+\/?$/.test(location)) {
+  const pathname = typeof window !== "undefined" ? window.location.pathname : "";
+  if (/^\/game\/[^/?#]+\/?$/.test(pathname)) {
     return <GamePage />;
   }
 
