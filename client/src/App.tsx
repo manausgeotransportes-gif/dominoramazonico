@@ -2,7 +2,7 @@ import GamePage from "./pages/GamePage";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/NotFound";
-import { Route, Switch } from "wouter";
+import { Route, Switch, useLocation } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import DevAccessBlocker from "./components/DevAccessBlocker";
@@ -13,12 +13,15 @@ import AdminPanel from "./pages/AdminPanel";
 import Friends from "./pages/Friends";
 import Agenda from "./pages/Agenda";
 function Router() {
+  const [location] = useLocation();
+  if (/^\/game\/[^/?#]+\/?$/.test(location)) {
+    return <GamePage />;
+  }
+
   return (
     <Switch>
       <Route path={"/"} component={Home} />
       <Route path={"/lobby"} component={Lobby} />
-      <Route path={"/game/:gameId"} component={GamePage} />
-      <Route path={/^\/game\/([^/]+)\/?$/} component={GamePage} />
       <Route path={"/ranking"} component={Ranking} />
       <Route path={"/friends"} component={Friends} />
       <Route path={"/agenda"} component={Agenda} />

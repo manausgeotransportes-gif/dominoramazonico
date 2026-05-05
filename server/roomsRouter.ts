@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
 import * as db from "./db";
+import * as gameService from "./gameService";
 import { TRPCError } from "@trpc/server";
 import { games, gamePlayers, rooms, roomPlayers, users } from "../drizzle/schema";
 import { desc, eq, and, lt } from "drizzle-orm";
@@ -260,6 +261,10 @@ export const roomsRouter = router({
       const drizzle = await db.getDb();
       if (!drizzle) {
         const room = joinRoomLocal(roomId, ctx.user.id, position);
+        if (room.currentPlayers >= room.maxPlayers || room.status === "playing") {
+          await gameService.createOrStartRoomGame(room.id, false);
+        }
+        await persistLocalStoreNow();
         return { message: "Aguardando na sala", roomId: room.id, position };
       }
 
@@ -377,6 +382,9 @@ export const roomsRouter = router({
         const candidate = listOpenRoomsLocal(100).find((room) => !room.isPrivate && room.currentPlayers < room.maxPlayers);
         if (candidate) {
           const room = joinRoomLocal(candidate.id, ctx.user.id);
+          if (room.currentPlayers >= room.maxPlayers || room.status === "playing") {
+            await gameService.createOrStartRoomGame(room.id, false);
+          }
           await persistLocalStoreNow();
           return { roomId: room.id, action: "joined" as const };
         }
