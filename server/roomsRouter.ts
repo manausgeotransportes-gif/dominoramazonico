@@ -179,6 +179,9 @@ export const roomsRouter = router({
             allowBot: input.allowBot,
             createdBy: ctx.user.id,
           });
+          if (input.allowBot) {
+            await gameService.createOrStartRoomGame(room.id, true);
+          }
           await persistLocalStoreNow();
           return { roomId: room.id, message: "Sala criada com sucesso" };
         }
