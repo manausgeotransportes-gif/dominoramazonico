@@ -794,6 +794,14 @@ export function getLocalUserById(userId: number | null | undefined) {
 
 export function logoutLocalUser(userId: number) {
   const user = users.get(userId);
+
+  for (const [roomId, room] of rooms.entries()) {
+    if (room.status !== "playing") continue;
+    const seats = normalizeRoomSeats(roomId);
+    if (!seats.includes(userId)) continue;
+    leaveRoomLocal(roomId, userId);
+  }
+
   leaveWaitingRoomsForUserLocal(userId);
   if (user) {
     user.isOnline = false;

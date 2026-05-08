@@ -91,7 +91,7 @@ export default function Lobby() {
   const [selectedFriendId, setSelectedFriendId] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [roomFilter, setRoomFilter] = useState<RoomFilter>("public");
-  const [selectedRoom, setSelectedRoom] = useState<{ roomId: number; position: number | null } | null>(null);
+  const [selectedRooms, setSelectedRooms] = useState<Record<number, number>>({});
   const [waitingRoom, setWaitingRoom] = useState<{ roomId: number; position: number | null } | null>(null);
   const [playerProfile, setPlayerProfile] = useState(loadPlayerProfile());
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -135,7 +135,7 @@ export default function Lobby() {
       }
       toast.success("Sala privada criada. Aguardando na sala.");
       setWaitingRoom({ roomId: data.roomId, position: 1 });
-      setSelectedRoom(null);
+      setSelectedRooms({});
       setRoomName("");
       setAllowBot(false);
       setSelectedFriendId(null);
@@ -162,7 +162,7 @@ export default function Lobby() {
       utils.rooms.getMyWaitingRoom.invalidate();
       publicRoomsQuery.refetch();
       privateRoomsQuery.refetch();
-      setSelectedRoom(null);
+      setSelectedRooms({});
     },
     onError: (error) => toast.error(error.message || "Erro ao entrar na sala"),
   });
@@ -191,16 +191,23 @@ export default function Lobby() {
   }, [user]);
 
   useEffect(() => {
-    if (!selectedRoom) return;
-    if (rooms.some((room: any) => room.id === selectedRoom.roomId)) return;
-    setSelectedRoom(null);
-  }, [rooms, selectedRoom]);
+    setSelectedRooms((current) => {
+      const next = Object.fromEntries(
+        Object.entries(current).filter(([roomId]) => rooms.some((room: any) => room.id === Number(roomId)))
+      );
+      if (Object.keys(next).length === Object.keys(current).length) return current;
+      return next;
+    });
+  }, [rooms]);
 
   useEffect(() => {
     const room = myWaitingRoomQuery.data;
-    if (!room) return;
+    if (!room) {
+      setWaitingRoom(null);
+      return;
+    }
     setWaitingRoom((current) => {
-      if (current?.roomId === room.id && current.position === room.position) return current;
+      if (current && current.roomId === room.id && current.position === room.position) return current;
       return { roomId: room.id, position: room.position ?? null };
     });
   }, [myWaitingRoomQuery.data]);
@@ -449,12 +456,16 @@ export default function Lobby() {
                 )}
               </div>
 
-              {selectedRoom && (
-                <div className="mt-2 flex items-center gap-2">
-                  <Button variant="outline" className="h-9" onClick={() => setSelectedRoom(null)}>
-                    Cancelar seleção
-                  </Button>
-                  <div className={`text-sm ${theme.muted}`}>Sala selecionada: #{selectedRoom.roomId} {selectedRoom.position ? `- posição ${selectedRoom.position}` : "(sem posição)"}</div>
+{Object.keys(selectedRooms).length > 0 && (
+                  <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
+                    <Button variant="outline" className="h-9" onClick={() => setSelectedRooms({})}>
+                      Cancelar seleção
+                    </Button>
+                    <div className={`text-sm ${theme.muted}`}>
+                      Salas selecionadas: {Object.entries(selectedRooms)
+                        .map(([roomId, position]) => `#${roomId} - posição ${position}`)
+                        .join(", ")}
+                    </div>
                 </div>
               )}
 
@@ -472,7 +483,7 @@ export default function Lobby() {
                   </Card>
                 ) : (
                   rooms.map((room: any, idx: number) => {
-                    const selectedPosition = selectedRoom && selectedRoom.roomId === room.id ? selectedRoom.position : null;
+                    const selectedPosition = selectedRooms[room.id] ?? null;
                     const waitingPosition = waitingRoom && waitingRoom.roomId === room.id ? waitingRoom.position : null;
 
                     return (
@@ -486,8 +497,8 @@ export default function Lobby() {
                         isJoining={joinRoomMutation.isPending}
                         onSelectPosition={(position) => {
                           if (joinRoomMutation.isPending) return;
-                          setSelectedRoom({ roomId: room.id, position });
-                          if (waitingRoom?.roomId === room.id && waitingRoom.position === position) return;
+                          setSelectedRooms((current) => ({ ...current, [room.id]: position }));
+                          if (waitingRoom && waitingRoom.roomId === room.id && waitingRoom.position === position) return;
                           joinRoomMutation.mutate({ roomId: room.id, position });
                         }}
                         onJoin={() => joinRoomMutation.mutate({ roomId: room.id, position: selectedPosition ?? undefined })}
@@ -502,31 +513,39 @@ export default function Lobby() {
               <CardHeader className="p-3 pb-1">
                 <CardTitle className="flex items-center gap-2 text-lg">
                   <Users className="h-5 w-5 text-emerald-300" />
-                  Jogadores online
+                  Jogadores online ({onlinePlayers.length})
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-2 p-3 pt-1">
-                {onlinePlayers.slice(0, 6).map((player: any) => (
-                  <div key={player.id} className={`flex items-center justify-between rounded-lg border px-3 py-2 ${theme.subtleButton}`}>
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-semibold">{player.name}</div>
-                      <div className={appearance === "light" ? "text-xs text-emerald-800" : "text-xs text-emerald-200"}>
-                        {player.isPlaying ? "Jogando" : "Disponível"}
+                {onlinePlayers.length > 0 ? (
+                  onlinePlayers.slice(0, 10).map((player: any) => (
+                    <div key={player.id} className={`flex items-center justify-between rounded-lg border px-3 py-2 ${theme.subtleButton} transition`}>
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-sm font-semibold">{player.name}</div>
+                        <div className={`flex items-center gap-1 text-xs ${appearance === "light" ? "text-emerald-800" : "text-emerald-200"}`}>
+                          <div className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                          {player.isPlaying ? "Jogando" : "Disponível"}
+                        </div>
                       </div>
+                      <Button
+                        size="sm"
+                        className="h-8 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50"
+                        disabled={player.isPlaying}
+                        onClick={() => {
+                          setSelectedFriendId(player.id);
+                          toast.info("Amigo selecionado. Crie a sala privada para enviar o convite.");
+                        }}
+                      >
+                        <UserPlus className="h-4 w-4" />
+                      </Button>
                     </div>
-                    <Button
-                      size="sm"
-                      className="h-8 bg-emerald-600 hover:bg-emerald-500"
-                      onClick={() => {
-                        setSelectedFriendId(player.id);
-                        toast.info("Amigo selecionado. Crie a sala privada para enviar o convite.");
-                      }}
-                    >
-                      <UserPlus className="h-4 w-4" />
-                    </Button>
+                  ))
+                ) : (
+                  <div className={`rounded-lg p-3 text-center text-sm ${theme.subtleButton}`}>
+                    <Users className="mx-auto mb-2 h-6 w-6 opacity-50" />
+                    <div>Nenhum jogador online agora</div>
                   </div>
-                ))}
-                {onlinePlayers.length === 0 && <div className={`rounded-lg p-3 text-sm ${theme.subtleButton}`}>Nenhum jogador online agora.</div>}
+                )}
               </CardContent>
             </Card>
           </section>
