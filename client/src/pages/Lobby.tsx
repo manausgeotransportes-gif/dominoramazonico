@@ -497,7 +497,7 @@ export default function Lobby() {
                         isJoining={joinRoomMutation.isPending}
                         onSelectPosition={(position) => {
                           if (joinRoomMutation.isPending) return;
-                          setSelectedRooms((current) => ({ ...current, [room.id]: position }));
+                          setSelectedRooms({ [room.id]: position });
                           if (waitingRoom && waitingRoom.roomId === room.id && waitingRoom.position === position) return;
                           joinRoomMutation.mutate({ roomId: room.id, position });
                         }}
@@ -516,9 +516,9 @@ export default function Lobby() {
                   Jogadores online ({onlinePlayers.length})
                 </CardTitle>
               </CardHeader>
-              <CardContent className="space-y-2 p-3 pt-1">
+              <CardContent className="max-h-[calc(100vh-8rem)] space-y-2 overflow-y-auto p-3 pt-1">
                 {onlinePlayers.length > 0 ? (
-                  onlinePlayers.slice(0, 10).map((player: any) => (
+                  onlinePlayers.map((player: any) => (
                     <div key={player.id} className={`flex items-center justify-between rounded-lg border px-3 py-2 ${theme.subtleButton} transition`}>
                       <div className="min-w-0 flex-1">
                         <div className="truncate text-sm font-semibold">{player.name}</div>
@@ -662,7 +662,7 @@ function RoomPanel({
         </div>
 
           <Button className="mt-3 h-10 w-full bg-emerald-600 font-semibold hover:bg-emerald-500" disabled={isJoining || isFull || isWaitingHere || !selectedSlotAvailable} onClick={onJoin}>
-          {isWaitingHere ? "Você está aguardando aqui" : isFull ? "Mesa cheia" : isJoining ? "Aguardando..." : selectedPosition ? `Confirmar posição ${selectedPosition}` : "Clique em uma posição"}
+          {isWaitingHere ? "Você está aguardando aqui" : isFull ? "Mesa cheia" : isJoining ? "Aguardando..." : selectedPosition ? `Entrar na posição ${selectedPosition}` : "Clique em uma posição"}
         </Button>
       </CardContent>
     </Card>

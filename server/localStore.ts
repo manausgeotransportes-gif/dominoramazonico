@@ -346,6 +346,11 @@ function persistLocalStore() {
   }
 
   fs.mkdirSync(LOCAL_STORE_DIR, { recursive: true });
+  if (process.env.NODE_ENV === "test") {
+    fs.writeFileSync(LOCAL_STORE_FILE, JSON.stringify(snapshot, null, 2), "utf8");
+    return;
+  }
+
   const tmpFile = `${LOCAL_STORE_FILE}.tmp`;
   fs.writeFileSync(tmpFile, JSON.stringify(snapshot, null, 2), "utf8");
   fs.renameSync(tmpFile, LOCAL_STORE_FILE);
@@ -980,7 +985,6 @@ export function leaveRoomLocal(roomId: number, userId: number) {
   const user = users.get(userId);
   if (user) {
     user.isPlaying = false;
-    user.isOnline = false;
     user.updatedAt = now();
   }
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { addLocalUserForTest, createRoomLocal } from "./localStore";
+import { addLocalUserForTest, createRoomLocal, getGameByRoomLocal, joinRoomLocal } from "./localStore";
 import * as gameService from "./gameService";
 import * as gameEngine from "./gameEngine";
 import { type Domino } from "./gameEngine";
@@ -79,9 +79,9 @@ describe("gameService", () => {
         expect(result.isValid).toBe(true);
         gameState = result.gameState;
 
-        // Simula jogadas válidas para os próximos jogadores (sem pontuação, só jogada válida)
+        // Simula jogadas válidas seguindo sempre o jogador da vez.
         for (let i = 1; i < 4; i++) {
-          const playerIdx = (idx66 + i) % 4;
+          const playerIdx = gameState.currentPlayerIndex;
           const hand = gameState.playerHands[playerIdx];
           // Busca uma jogada válida
           const validMoves = gameEngine.getValidMoves(hand, gameState.boardState);
@@ -149,6 +149,50 @@ describe("gameService", () => {
   });
 
   describe("createOrStartRoomGame", () => {
+    it("deve ser idempotente quando a mesma sala completa inicia em paralelo", async () => {
+      const baseId = 700 + Math.floor(Math.random() * 10_000);
+      for (let index = 0; index < 4; index += 1) {
+        addLocalUserForTest({
+          id: baseId + index,
+          openId: `parallel-player-${baseId}-${index}`,
+          name: `Jogador paralelo ${index + 1}`,
+          email: null,
+          loginMethod: "test",
+          passwordHash: null,
+          role: "user",
+          isOnline: true,
+          isPlaying: false,
+          blockedUntil: null,
+          blockReason: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          lastSignedIn: new Date(),
+        });
+      }
+
+      const room = createRoomLocal({
+        name: `Sala paralela ${baseId}`,
+        isPrivate: false,
+        allowBot: false,
+        createdBy: baseId,
+      });
+      joinRoomLocal(room.id, baseId + 1, 2);
+      joinRoomLocal(room.id, baseId + 2, 3);
+      joinRoomLocal(room.id, baseId + 3, 4);
+
+      const results = await Promise.all([
+        gameService.createOrStartRoomGame(room.id, false),
+        gameService.createOrStartRoomGame(room.id, false),
+        gameService.createOrStartRoomGame(room.id, false),
+        gameService.createOrStartRoomGame(room.id, false),
+      ]);
+
+      const gameIds = new Set(results.map((result) => result?.gameId));
+      expect(gameIds.size).toBe(1);
+      expect(getGameByRoomLocal(room.id)?.playerIds).toEqual([baseId, baseId + 1, baseId + 2, baseId + 3]);
+      expect(getGameByRoomLocal(room.id)?.isBotPlayer).toEqual([false, false, false, false]);
+    });
+
     it("não deve iniciar sala pública incompleta com bots", async () => {
       addLocalUserForTest({
         id: 501,

@@ -14,21 +14,14 @@ export default function GamePage() {
   const pageRef = useRef<HTMLDivElement>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const scorePanelRef = useRef<ScorePanelHandle>(null);
-  const startedRoomRef = useRef<number | null>(null);
   const [location, navigate] = useLocation();
   const pathname = typeof window !== "undefined" ? window.location.pathname : location;
   const routeGameId = params?.gameId ?? pathname.match(/^\/game\/([^/?#]+)\/?$/)?.[1] ?? location.match(/^\/game\/([^/?#]+)\/?$/)?.[1];
   const roomId = routeGameId ? parseInt(routeGameId, 10) : NaN;
   const canUseRoomId = (match || pathname.startsWith("/game/") || location.startsWith("/game/")) && Number.isFinite(roomId);
-  const { isAuthenticated, loading: authLoading, user } = useAuth({ redirectOnUnauthenticated: true, redirectPath: "/" });
+  const { isAuthenticated, user } = useAuth({ redirectOnUnauthenticated: true, redirectPath: "/" });
 
   const leaveRoomMutation = trpc.rooms.leaveRoom.useMutation();
-  const startRoomGameMutation = trpc.games.startRoomGame.useMutation({
-    onError: (error) => {
-      startedRoomRef.current = null;
-      toast.error(error.message || "Não foi possível iniciar a partida.");
-    },
-  });
   const playMoveMutation = trpc.games.playMove.useMutation();
   const finishRoomMatchMutation = trpc.games.finishRoomMatch.useMutation({
     onSuccess: () => {
@@ -44,14 +37,18 @@ export default function GamePage() {
     enabled: canUseRoomId,
     refetchInterval: 2000,
   });
+  const { data: roomGameState } = trpc.games.getRoomGameState.useQuery(roomId, {
+    enabled: canUseRoomId && room?.status === "playing",
+    refetchInterval: 2000,
+    retry: false,
+  });
   const { data: ranking, refetch: refetchRanking } = trpc.ranking.getPlayerRanking.useQuery(undefined, {
     enabled: canUseRoomId && isAuthenticated,
   });
   const maxPlayers = room?.maxPlayers ?? 4;
   const currentPlayers = room?.currentPlayers ?? players?.length ?? 0;
-  const canStartWithBots = Boolean(room?.allowBot);
   const hasEnoughPlayers = currentPlayers >= maxPlayers;
-  const shouldShowTable = Boolean(room && (canStartWithBots || hasEnoughPlayers || room.status === "playing"));
+  const shouldShowTable = Boolean(room && roomGameState);
 
   const syncIframe = useCallback(() => {
     if (!iframeRef.current?.contentWindow || !canUseRoomId) return;
@@ -122,14 +119,6 @@ export default function GamePage() {
     toast.error("Esta sala foi encerrada. Voltando ao lobby.");
     navigate("/lobby");
   }, [navigate, roomError]);
-
-  useEffect(() => {
-    if (!canUseRoomId || authLoading || !isAuthenticated || !room || startRoomGameMutation.isPending || startedRoomRef.current === roomId) return;
-    const shouldStart = Boolean(room.allowBot) || room.currentPlayers >= room.maxPlayers;
-    if (!shouldStart || room.status === "finished" || room.status === "closed") return;
-    startedRoomRef.current = roomId;
-    startRoomGameMutation.mutate({ roomId, fillBots: Boolean(room.allowBot) });
-  }, [authLoading, canUseRoomId, isAuthenticated, room, roomId, startRoomGameMutation]);
 
   useEffect(() => {
     const updateViewportHeight = () => {

@@ -24,6 +24,8 @@ import {
 import type { LocalGameState } from "./localStore";
 import { getRoomByIdLocal, createRoomLocal, joinRoomLocal, getLocalUserById, createGameLocal, setGameLocal, recomputeTeamScores, getTeamIndex, ensureRoomReadyWithBots, getGameByRoomLocal, recordFinishedGame, getGameByIdLocal, appendMessage, recordRoomMatchResultLocal } from "./localStore";
 
+const roomGameStartLocks = new Map<number, Promise<GameState | LocalGameState | null>>();
+
 const STANDARD_BOT_SLOTS = [
   { openId: "bot-padrao-1", name: "Bot Norte", email: "bot-padrao-1@domino.local" },
   { openId: "bot-padrao-2", name: "Bot Centro", email: "bot-padrao-2@domino.local" },
@@ -436,7 +438,12 @@ export async function createGame(roomId: number, playerIds: number[], isBotPlaye
   const boardState: BoardState = createEmptyBoardState();
   const startPlayerIndex = getStartPlayerIndexBySena(hands);
 
-  await db.insert(games).values({
+  const existingBeforeInsert = await db.select().from(games).where(eq(games.roomId, roomId)).orderBy(desc(games.id)).limit(1);
+  if (existingBeforeInsert[0]) {
+    return getGameState(existingBeforeInsert[0].id);
+  }
+
+  const insertResult = await db.insert(games).values({
     roomId,
     status: "playing",
     currentPlayerIndex: startPlayerIndex,
@@ -446,7 +453,10 @@ export async function createGame(roomId: number, playerIds: number[], isBotPlaye
   // A sala deixa de ser listada como disponível assim que a partida inicia.
   await db.update(gameRooms).set({ status: "playing" }).where(eq(gameRooms.id, roomId));
 
-  const gameList = await db.select().from(games).where(eq(games.roomId, roomId)).orderBy(desc(games.id)).limit(1);
+  const insertedId = Array.isArray(insertResult) ? Number((insertResult[0] as any)?.insertId) : NaN;
+  const gameList = Number.isFinite(insertedId) && insertedId > 0
+    ? await db.select().from(games).where(eq(games.id, insertedId)).limit(1)
+    : await db.select().from(games).where(eq(games.roomId, roomId)).orderBy(desc(games.id)).limit(1);
   const gameId = gameList[0]?.id;
   if (!gameId) return null;
 
@@ -482,6 +492,17 @@ export async function createGame(roomId: number, playerIds: number[], isBotPlaye
 }
 
 export async function createOrStartRoomGame(roomId: number, fillBots = false) {
+  const existingStart = roomGameStartLocks.get(roomId);
+  if (existingStart) return existingStart;
+
+  const startPromise = createOrStartRoomGameLocked(roomId, fillBots).finally(() => {
+    roomGameStartLocks.delete(roomId);
+  });
+  roomGameStartLocks.set(roomId, startPromise);
+  return startPromise;
+}
+
+async function createOrStartRoomGameLocked(roomId: number, fillBots = false) {
   const db = await getDb();
   if (db) {
     const existingGame = await db.select().from(games).where(eq(games.roomId, roomId)).orderBy(desc(games.id)).limit(1);
@@ -503,6 +524,8 @@ export async function createOrStartRoomGame(roomId: number, fillBots = false) {
     const playerIds = seatedPlayers.map((player) => player.userId).slice(0, 4);
     if (playerIds.length !== 4) return null;
     const isBotPlayer = await getDbPlayerBotFlags(playerIds);
+    const existingBeforeCreate = await db.select().from(games).where(eq(games.roomId, roomId)).orderBy(desc(games.id)).limit(1);
+    if (existingBeforeCreate[0]) return getGameState(existingBeforeCreate[0].id);
     return createGame(roomId, playerIds, isBotPlayer);
   }
 
@@ -515,6 +538,18 @@ export async function createOrStartRoomGame(roomId: number, fillBots = false) {
   if (existing) return maybeRunBotTurns(existing);
   const created = createGameLocal(roomId);
   return maybeRunBotTurns(created);
+}
+
+export async function getRoomGameState(roomId: number) {
+  const db = await getDb();
+  if (!db) {
+    const localGame = getGameByRoomLocal(roomId);
+    return localGame ? maybeRunBotTurns(localGame) : null;
+  }
+
+  const existingGame = await db.select().from(games).where(eq(games.roomId, roomId)).orderBy(desc(games.id)).limit(1);
+  if (!existingGame[0]) return null;
+  return getGameState(existingGame[0].id);
 }
 
 export async function finishRoomMatch(roomId: number, winnerPlayerIndex: number) {

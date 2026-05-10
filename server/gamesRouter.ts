@@ -51,6 +51,10 @@ export const gamesRouter = router({
     return gameState;
   }),
 
+  getRoomGameState: publicProcedure.input(z.number()).query(async ({ input: roomId }) => {
+    return gameService.getRoomGameState(roomId);
+  }),
+
   playMove: protectedProcedure
     .input(
       z.object({

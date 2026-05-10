@@ -301,6 +301,7 @@ export const roomsRouter = router({
       }
       const drizzle = await db.getDb();
       if (!drizzle) {
+        leaveWaitingRoomsForUserLocal(ctx.user.id, roomId);
         const room = joinRoomLocal(roomId, ctx.user.id, position);
         if (room.currentPlayers >= room.maxPlayers || room.status === "playing") {
           await gameService.createOrStartRoomGame(room.id, false);
@@ -363,6 +364,7 @@ export const roomsRouter = router({
         .where(eq(rooms.id, roomId));
       if (nextCount >= room.maxPlayers) {
         await gameService.createOrStartRoomGame(roomId, false);
+        await ensureDbAutoRoomsAvailable(4);
       }
       await ensureDbAutoRoomsAvailable(4);
       return {
@@ -401,9 +403,9 @@ export const roomsRouter = router({
         if (existing.length > 0) {
           const activeGame = await drizzle.select().from(games).where(eq(games.roomId, roomId)).orderBy(desc(games.id)).limit(1);
           const game = activeGame[0];
-          const bot = await createDbBotUser(existing[0].id);
+          const bot = await createDbBotUser(existing[0].seatPosition);
 
-          await drizzle.update(users).set({ isPlaying: false, isOnline: false }).where(eq(users.id, ctx.user.id));
+          await drizzle.update(users).set({ isPlaying: false }).where(eq(users.id, ctx.user.id));
           await drizzle.update(roomPlayers).set({ userId: bot.id }).where(eq(roomPlayers.id, existing[0].id));
 
           if (game) {
