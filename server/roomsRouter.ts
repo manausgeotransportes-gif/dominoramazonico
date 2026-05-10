@@ -39,6 +39,37 @@ function getFirstOpenPosition(players: Array<{ seatPosition?: number | null }>, 
   return null;
 }
 
+// Limpar usuários offline das salas
+async function cleanupOfflinePlayersFromRoom(roomId: number) {
+  const drizzle = await db.getDb();
+  if (!drizzle) return;
+
+  const players = await drizzle.select().from(roomPlayers).where(eq(roomPlayers.roomId, roomId));
+  
+  for (const player of players) {
+    const userRows = await drizzle.select().from(users).where(eq(users.id, player.userId)).limit(1);
+    const user = userRows[0];
+    
+    // Se o usuário está offline, remover da sala
+    if (user && !user.isOnline && user.loginMethod !== "bot") {
+      await drizzle.delete(roomPlayers).where(eq(roomPlayers.id, player.id));
+    }
+  }
+  
+  // Atualizar contagem de jogadores
+  const remainingPlayers = await drizzle.select().from(roomPlayers).where(eq(roomPlayers.roomId, roomId));
+  const room = await db.getRoomById(roomId);
+  if (room) {
+    await drizzle
+      .update(rooms)
+      .set({
+        currentPlayers: remainingPlayers.length,
+        status: remainingPlayers.length === 0 && room.isPrivate ? "closed" : room.status,
+      })
+      .where(eq(rooms.id, roomId));
+  }
+}
+
 async function cleanupDbWaitingRoomsForUser(userId: number, exceptRoomId?: number) {
   const drizzle = await db.getDb();
   if (!drizzle) return;
@@ -314,9 +345,18 @@ export const roomsRouter = router({
         };
       }
 
+      // Validar que o usuário está online
+      const currentUser = await drizzle.select().from(users).where(eq(users.id, ctx.user.id)).limit(1);
+      if (!currentUser[0]?.isOnline) {
+        throw new TRPCError({ code: "UNAUTHORIZED", message: "Usuário deve estar online para entrar em uma sala" });
+      }
+
       const room = await db.getRoomById(roomId);
       if (!room) throw new TRPCError({ code: "NOT_FOUND", message: "Sala não encontrada" });
       if (room.status !== "waiting") throw new TRPCError({ code: "BAD_REQUEST", message: "Esta sala já iniciou" });
+
+      // Limpar jogadores offline antes de processar
+      await cleanupOfflinePlayersFromRoom(roomId);
 
       await cleanupDbWaitingRoomsForUser(ctx.user.id, roomId);
 
@@ -526,6 +566,9 @@ export const roomsRouter = router({
       const drizzle = await db.getDb();
       if (!drizzle) return getRoomPlayersLocal(roomId);
 
+      // Limpar usuários offline antes de retornar
+      await cleanupOfflinePlayersFromRoom(roomId);
+
       const players = await drizzle.select().from(roomPlayers).where(eq(roomPlayers.roomId, roomId)).orderBy(asc(roomPlayers.seatPosition));
       const enriched = [];
       for (const player of players) {
@@ -536,14 +579,78 @@ export const roomsRouter = router({
           name: user?.name ?? `Jogador ${player.seatPosition}`,
           email: user?.email ?? null,
           loginMethod: user?.loginMethod ?? null,
+          isBot: (user?.loginMethod ?? "") === "bot",
           isOnline: user?.isOnline ?? false,
           isPlaying: user?.isPlaying ?? false,
+          role: user?.role ?? "user",
         });
       }
       return enriched;
     } catch (error) {
       console.error("Erro ao obter jogadores da sala:", error);
       throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Erro ao obter jogadores" });
+    }
+  }),
+
+  cleanupRoom: protectedProcedure.input(z.number()).mutation(async ({ input: roomId, ctx }) => {
+    try {
+      const drizzle = await db.getDb();
+      if (!drizzle) return { message: "Limpeza concluída" };
+
+      // Verificar se o usuário é o criador da sala
+      const room = await db.getRoomById(roomId);
+      if (!room) throw new TRPCError({ code: "NOT_FOUND", message: "Sala não encontrada" });
+      if (room.createdBy !== ctx.user.id && ctx.user.role !== "admin") {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Apenas o criador ou admin pode limpar a sala" });
+      }
+
+      // Limpar usuários offline
+      await cleanupOfflinePlayersFromRoom(roomId);
+      return { message: "Sala limpa com sucesso" };
+    } catch (error) {
+      if (error instanceof TRPCError) throw error;
+      console.error("Erro ao limpar sala:", error);
+      throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Erro ao limpar sala" });
+    }
+  }),
+
+  validateRoomIntegrity: publicProcedure.input(z.number()).query(async ({ input: roomId }) => {
+    try {
+      const drizzle = await db.getDb();
+      if (!drizzle) return { isValid: true, issues: [] };
+
+      const room = await db.getRoomById(roomId);
+      if (!room) throw new TRPCError({ code: "NOT_FOUND", message: "Sala não encontrada" });
+
+      const players = await drizzle.select().from(roomPlayers).where(eq(roomPlayers.roomId, roomId));
+      const issues: string[] = [];
+      let offlineCount = 0;
+
+      for (const player of players) {
+        const userRows = await drizzle.select().from(users).where(eq(users.id, player.userId)).limit(1);
+        const user = userRows[0];
+        
+        if (user && !user.isOnline && user.loginMethod !== "bot") {
+          offlineCount++;
+          issues.push(`Jogador ${user.name} está offline mas ocupa a posição ${player.seatPosition}`);
+        }
+      }
+
+      if (room.currentPlayers !== players.length) {
+        issues.push(`Contagem de jogadores incorreta: banco diz ${room.currentPlayers}, mas há ${players.length} jogadores`);
+      }
+
+      return {
+        isValid: issues.length === 0,
+        issues,
+        offlineCount,
+        totalPlayers: players.length,
+        roomStatus: room.status,
+      };
+    } catch (error) {
+      if (error instanceof TRPCError) throw error;
+      console.error("Erro ao validar sala:", error);
+      throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Erro ao validar sala" });
     }
   }),
 });

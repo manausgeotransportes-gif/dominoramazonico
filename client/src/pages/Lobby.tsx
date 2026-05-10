@@ -590,10 +590,14 @@ function RoomPanel({
     const position = index + 1;
     return waitingPlayers.find((player: any) => (player.seatPosition ?? player.id) === position);
   });
-  const isFull = room.currentPlayers >= room.maxPlayers;
+  
+  // Contar apenas jogadores online
+  const onlinePlayersCount = slots.filter((player: any) => Boolean(player) && player?.isOnline).length;
+  const isFull = onlinePlayersCount >= (room.maxPlayers ?? 4);
   const isLight = theme === APPEARANCES.light;
   const selectedSlot = selectedPosition ? slots[selectedPosition - 1] : null;
-  const selectedSlotBlocked = Boolean(selectedSlot && selectedSlot.userId !== currentUserId);
+  // Slot bloqueado se está preenchido por outro usuário online
+  const selectedSlotBlocked = Boolean(selectedSlot && selectedSlot?.isOnline && selectedSlot.userId !== currentUserId);
   const selectedIsCurrentWaiting = Boolean(selectedPosition && waitingPosition === selectedPosition);
   const isWaitingHere = Boolean(waitingPosition);
 
@@ -612,12 +616,13 @@ function RoomPanel({
           <div className="flex gap-1.5">
             {slots.map((player: any, index) => {
               const position = index + 1;
-              const filled = Boolean(player);
+              // Apenas considerar como preenchido se o jogador está online
+              const filled = Boolean(player) && player?.isOnline;
               const filledByCurrentUser = filled && player?.userId === currentUserId;
               const selected = selectedPosition === position;
               const waiting = waitingPosition === position;
               const pairLabel = position === 1 || position === 3 ? "Dupla 1" : "Dupla 2";
-              const label = filled ? player?.name ?? `Jogador ${position}` : `Posição ${position} - ${pairLabel}`;
+              const label = filled ? (player?.name ?? `Jogador ${position}`) : `Posição ${position} - ${pairLabel}`;
 
               return (
               <button

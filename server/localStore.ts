@@ -886,6 +886,9 @@ export function getRoomPlayersLocal(roomId: number) {
       joinedAt: user.createdAt,
       leftAt: null,
       name: user.name,
+      email: user.email ?? null,
+      loginMethod: user.loginMethod ?? null,
+      isBot: (user.loginMethod ?? "") === "bot",
       isOnline: user.isOnline,
       isPlaying: user.isPlaying,
       role: user.role,
@@ -904,10 +907,43 @@ export function getWaitingRoomForUserLocal(userId: number) {
   return null;
 }
 
+export function cleanupOfflinePlayersLocal(roomId: number) {
+  const room = rooms.get(roomId);
+  if (!room) return;
+
+  const current = normalizeRoomSeats(roomId);
+  let hasChanges = false;
+
+  for (let i = 0; i < current.length; i++) {
+    const userId = current[i];
+    if (typeof userId !== "number" || userId <= 0) continue;
+
+    const user = users.get(userId);
+    if (user && !user.isOnline && user.loginMethod !== "bot") {
+      current[i] = null;
+      hasChanges = true;
+    }
+  }
+
+  if (hasChanges) {
+    roomPlayers.set(roomId, current);
+    room.currentPlayers = countOccupiedSeats(current);
+    room.updatedAt = now();
+    if (room.currentPlayers === 0 && room.isPrivate) {
+      room.status = "closed";
+    }
+    persistLocalStore();
+  }
+}
+
 export function joinRoomLocal(roomId: number, userId: number, requestedPosition?: number | null) {
   const room = rooms.get(roomId);
   if (!room) throw new Error("Sala não encontrada");
   if (room.status !== "waiting") throw new Error("Esta sala já iniciou");
+  
+  // Limpar usuários offline antes de processar
+  cleanupOfflinePlayersLocal(roomId);
+  
   leaveWaitingRoomsForUserLocal(userId, roomId);
   const current = normalizeRoomSeats(roomId);
   const existingIndex = current.indexOf(userId);
