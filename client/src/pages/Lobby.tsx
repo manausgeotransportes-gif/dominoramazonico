@@ -151,8 +151,28 @@ export default function Lobby() {
     ]);
   };
 
+  const leaveRoomMutation = trpc.rooms.leaveRoom.useMutation({
+    onSuccess: () => {
+      toast.success("Você saiu da posição.");
+      setWaitingRoom(null);
+      setSelectedRooms({});
+      setJoiningRoomId(null);
+      refreshRoomData();
+    },
+    onError: (error) => toast.error(error.message || "Erro ao sair da sala"),
+  });
+
   const joinRoomMutation = trpc.rooms.joinRoom.useMutation({
     onSuccess: (data) => {
+      // Verifica se é uma ação de saída (quando já estava na sala)
+      if ((data as any).action === "left") {
+        toast.success("Você saiu da posição.");
+        setWaitingRoom(null);
+        setSelectedRooms({});
+        refreshRoomData(data.roomId);
+        return;
+      }
+      
       const joinedRoomIsReady =
         data.status === "playing" ||
         (typeof data.currentPlayers === "number" && typeof data.maxPlayers === "number" && data.currentPlayers >= data.maxPlayers);
@@ -488,9 +508,26 @@ export default function Lobby() {
                         currentUserId={user?.id ?? null}
                         isJoining={joiningRoomId === room.id && joinRoomMutation.isPending}
                         onSelectPosition={(position) => {
-                          setSelectedRooms({ [room.id]: position });
+                          // Se já está aguardando nesta sala, permitir deselecionar
+                          if (waitingPosition === position && selectedPosition === position) {
+                            setSelectedRooms({});
+                          } else {
+                            setSelectedRooms({ [room.id]: position });
+                          }
                         }}
                         onJoin={() => {
+                          const isCurrentWaitingRoom = waitingRoom?.roomId === room.id;
+                          const isCurrentWaitingPosition = waitingPosition === selectedPosition;
+                          
+                          // Se já está aguardando nesta posição, sair
+                          if (isCurrentWaitingRoom && isCurrentWaitingPosition && selectedPosition) {
+                            if (joinRoomMutation.isPending) return;
+                            setJoiningRoomId(room.id);
+                            // Clicar novamente na mesma posição para deselecionar/sair
+                            joinRoomMutation.mutate({ roomId: room.id, position: selectedPosition });
+                            return;
+                          }
+                          
                           if (!selectedPosition || joinRoomMutation.isPending) return;
                           setJoiningRoomId(room.id);
                           joinRoomMutation.mutate({ roomId: room.id, position: selectedPosition });
@@ -503,11 +540,20 @@ export default function Lobby() {
             </div>
 
             <Card className={`shadow-xl ${theme.card}`}>
-              <CardHeader className="p-3 pb-1">
+              <CardHeader className="flex items-center justify-between p-3 pb-1">
                 <CardTitle className="flex items-center gap-2 text-lg">
                   <Users className="h-5 w-5 text-emerald-300" />
                   Jogadores online ({onlinePlayers.length})
                 </CardTitle>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-6"
+                  onClick={() => availableUsersQuery.refetch()}
+                  disabled={availableUsersQuery.isRefetching}
+                >
+                  <RefreshCw className={`h-3 w-3 ${availableUsersQuery.isRefetching ? "animate-spin" : ""}`} />
+                </Button>
               </CardHeader>
               <CardContent className="max-h-[calc(100vh-8rem)] space-y-2 overflow-y-auto p-3 pt-1">
                 {onlinePlayers.length > 0 ? (
@@ -516,7 +562,7 @@ export default function Lobby() {
                       <div className="min-w-0 flex-1">
                         <div className="truncate text-sm font-semibold">{player.name}{player.id === user?.id ? " (você)" : ""}</div>
                         <div className={`flex items-center gap-1 text-xs ${appearance === "light" ? "text-emerald-800" : "text-emerald-200"}`}>
-                          <div className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                          <div className={`h-1.5 w-1.5 rounded-full ${player.isPlaying ? "bg-amber-400" : "bg-emerald-400"}`} />
                           {player.isPlaying ? "Jogando" : "Disponível"}
                         </div>
                       </div>
@@ -623,6 +669,8 @@ function RoomPanel({
               const waiting = waitingPosition === position;
               const pairLabel = position === 1 || position === 3 ? "Dupla 1" : "Dupla 2";
               const label = filled ? (player?.name ?? `Jogador ${position}`) : `Posição ${position} - ${pairLabel}`;
+              // Se já está aguardando em outra posição, desabilitar outras posições
+              const isDisabledByWaiting = isWaitingHere && !waiting;
 
               return (
               <button
@@ -631,7 +679,7 @@ function RoomPanel({
                 aria-label={label}
                 aria-pressed={selected}
                 title={label}
-                disabled={isJoining || (isFull && !filledByCurrentUser) || (filled && !filledByCurrentUser)}
+                disabled={isJoining || isDisabledByWaiting || (isFull && !filledByCurrentUser) || (filled && !filledByCurrentUser)}
                 onClick={() => {
                   onSelectPosition(position);
                 }}
@@ -649,20 +697,20 @@ function RoomPanel({
               >
                 {filled ? <Users className="h-3.5 w-3.5 text-emerald-100" /> : position}
                 <div className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-2 hidden min-w-28 -translate-x-1/2 whitespace-nowrap rounded-lg border border-emerald-300/20 bg-slate-950 px-2 py-1 text-xs font-semibold text-white shadow-xl group-hover:block group-focus:block">
-                  {label}
+                  {isDisabledByWaiting ? "Saia de sua posição antes" : label}
                 </div>
               </button>
               );
             })}
           </div>
           <div className="text-right">
-            <div className="text-xl font-black">{room.currentPlayers}/{room.maxPlayers}</div>
-            <div className={`text-xs ${theme.muted}`}>jogadores</div>
+            <div className="text-xl font-black">{onlinePlayersCount}/{room.maxPlayers}</div>
+            <div className={`text-xs ${theme.muted}`}>online</div>
           </div>
         </div>
 
-          <Button className="mt-3 h-10 w-full bg-emerald-600 font-semibold hover:bg-emerald-500" disabled={isJoining || isFull || !selectedPosition || selectedSlotBlocked || selectedIsCurrentWaiting} onClick={onJoin}>
-          {selectedIsCurrentWaiting ? "Você está aguardando aqui" : isFull ? "Mesa cheia" : isJoining ? "Aguardando..." : selectedPosition ? `${isWaitingHere ? "Trocar para" : "Confirmar"} posição ${selectedPosition}` : "Clique em uma posição"}
+          <Button className="mt-3 h-10 w-full bg-emerald-600 font-semibold hover:bg-emerald-500" disabled={isJoining || (!selectedIsCurrentWaiting && (isFull || !selectedPosition || selectedSlotBlocked))} onClick={onJoin}>
+          {selectedIsCurrentWaiting ? "Clique para sair desta posição" : isFull ? "Mesa cheia" : isJoining ? "Aguardando..." : selectedPosition ? `${isWaitingHere ? "Trocar para" : "Confirmar"} posição ${selectedPosition}` : "Clique em uma posição"}
         </Button>
       </CardContent>
     </Card>
