@@ -337,6 +337,7 @@ function scheduleMongoPersist(snapshot: PersistedLocalStore) {
 
 function persistLocalStore() {
   if (isPersistingSuspended) return;
+  if (process.env.NODE_ENV === "test") return;
 
   const snapshot = createSnapshot();
 
@@ -346,17 +347,13 @@ function persistLocalStore() {
   }
 
   fs.mkdirSync(LOCAL_STORE_DIR, { recursive: true });
-  if (process.env.NODE_ENV === "test") {
-    fs.writeFileSync(LOCAL_STORE_FILE, JSON.stringify(snapshot, null, 2), "utf8");
-    return;
-  }
-
   const tmpFile = `${LOCAL_STORE_FILE}.tmp`;
   fs.writeFileSync(tmpFile, JSON.stringify(snapshot, null, 2), "utf8");
   fs.renameSync(tmpFile, LOCAL_STORE_FILE);
 }
 
 function loadPersistedLocalStore() {
+  if (process.env.NODE_ENV === "test") return;
   if (!fs.existsSync(LOCAL_STORE_FILE)) return;
 
   try {
@@ -433,7 +430,7 @@ function closeRestoredBotGames() {
   }
 
   if (changed) {
-    ensureAutoRoomsAvailable(4);
+    ensureAutoRoomsAvailable(1);
   }
   return changed;
 }
@@ -514,7 +511,7 @@ function ensureSeedData() {
   ensureStandardBotsLocal();
 
   if (rooms.size === 0) {
-    ensureAutoRoomsAvailable(4);
+    ensureAutoRoomsAvailable(1);
   }
 }
 
@@ -579,7 +576,7 @@ function countOccupiedSeats(ids: Array<number | null>) {
   return ids.filter((id) => typeof id === "number" && id > 0).length;
 }
 
-function ensureAutoRoomsAvailable(minAvailable = 4) {
+function ensureAutoRoomsAvailable(minAvailable = 1) {
   let changed = false;
   Array.from(rooms.values()).forEach((room) => {
     if (!room.isPrivate && room.isAutoRoom && room.allowBot) {
@@ -621,7 +618,7 @@ export function cleanupExpiredPrivateRoomsLocal(maxAgeHours = 24) {
   }
 
   if (changed) {
-    ensureAutoRoomsAvailable(4);
+    ensureAutoRoomsAvailable(1);
     persistLocalStore();
   }
   return changed;
@@ -842,7 +839,7 @@ export function createRoomLocal(params: { name: string; isPrivate: boolean; allo
     id: nextRoomId++,
     name: params.name,
     isPrivate: params.isPrivate,
-    allowBot: params.isPrivate ? params.allowBot : false,
+    allowBot: false,
     createdBy: params.createdBy,
     maxPlayers: 4,
     currentPlayers: 1,
@@ -860,7 +857,7 @@ export function createRoomLocal(params: { name: string; isPrivate: boolean; allo
 export function listOpenRoomsLocal(limit = 20) {
   ensureSeedData();
   cleanupExpiredPrivateRoomsLocal();
-  ensureAutoRoomsAvailable(4);
+  ensureAutoRoomsAvailable(1);
   return Array.from(rooms.values())
     .filter((room) => room.status === "waiting" && room.currentPlayers < room.maxPlayers)
     .sort((a, b) => Number(Boolean(b.isAutoRoom)) - Number(Boolean(a.isAutoRoom)) || b.updatedAt.getTime() - a.updatedAt.getTime())
@@ -946,7 +943,7 @@ export function joinRoomLocal(roomId: number, userId: number, requestedPosition?
       room.status = "playing";
       room.updatedAt = now();
     }
-    ensureAutoRoomsAvailable(4);
+    ensureAutoRoomsAvailable(1);
   }
   persistLocalStore();
   return room;
@@ -972,7 +969,7 @@ export function leaveWaitingRoomsForUserLocal(userId: number, exceptRoomId?: num
   }
 
   if (changed) {
-    ensureAutoRoomsAvailable(4);
+    ensureAutoRoomsAvailable(1);
     persistLocalStore();
   }
 }
@@ -1008,7 +1005,7 @@ export function leaveRoomLocal(roomId: number, userId: number) {
     roomPlayers.set(roomId, replacedPlayers);
     room.currentPlayers = replacedPlayers.length;
     room.updatedAt = now();
-    ensureAutoRoomsAvailable(4);
+    ensureAutoRoomsAvailable(1);
     persistLocalStore();
     return;
   }
@@ -1067,7 +1064,7 @@ function orientForRight(domino: Domino, openValue: number | null): Domino {
 }
 
 export function createGameLocal(roomId: number, options?: { playerIds?: number[]; status?: LocalGameState["status"] }) {
-  ensureAutoRoomsAvailable(4);
+  ensureAutoRoomsAvailable(1);
   const room = rooms.get(roomId);
   if (!room) throw new Error("Sala não encontrada");
 
@@ -1114,7 +1111,7 @@ export function createGameLocal(roomId: number, options?: { playerIds?: number[]
 
   room.status = options?.status === "abandoned" ? "finished" : (options?.status ?? "playing");
   room.updatedAt = now();
-  ensureAutoRoomsAvailable(4);
+  ensureAutoRoomsAvailable(1);
   playerIds.forEach((id) => {
     const user = users.get(id);
     if (user) user.isPlaying = true;
@@ -1176,7 +1173,7 @@ export function closeInactiveGamesLocal() {
   }
 
   if (closed.length || warned.length) {
-    ensureAutoRoomsAvailable(4);
+    ensureAutoRoomsAvailable(1);
     persistLocalStore();
   }
   return { closedCount: closed.length, warnedCount: warned.length };
@@ -1281,13 +1278,14 @@ function areFriendsLocal(userA: number, userB: number) {
 export function listAvailableUsersLocal(currentUserId: number) {
   ensureSeedData();
   return Array.from(users.values())
-    .filter((user) => user.id !== currentUserId && (user.loginMethod ?? "") !== "bot")
+    .filter((user) => (user.loginMethod ?? "") !== "bot")
     .map((user) => ({
       id: user.id,
       name: user.name,
       email: user.email,
       isOnline: user.isOnline,
       isPlaying: user.isPlaying,
+      isSelf: user.id === currentUserId,
       isBlocked: isBlockedLocal(user.id),
       isFriend: areFriendsLocal(currentUserId, user.id),
     }))
@@ -1492,7 +1490,7 @@ export function recordFinishedGame(game: LocalGameState) {
 
   const room = rooms.get(game.roomId);
   if (room) room.status = "finished";
-  ensureAutoRoomsAvailable(4);
+  ensureAutoRoomsAvailable(1);
   persistLocalStore();
 }
 
@@ -1528,7 +1526,7 @@ export function recordRoomMatchResultLocal(roomId: number, winnerPlayerIndex: nu
     room.status = "finished";
     room.updatedAt = now();
   }
-  ensureAutoRoomsAvailable(4);
+  ensureAutoRoomsAvailable(1);
   persistLocalStore();
 }
 

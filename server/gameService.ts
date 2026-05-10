@@ -507,6 +507,7 @@ async function createOrStartRoomGameLocked(roomId: number, fillBots = false) {
   if (db) {
     const existingGame = await db.select().from(games).where(eq(games.roomId, roomId)).orderBy(desc(games.id)).limit(1);
     if (existingGame[0]) return getGameState(existingGame[0].id);
+    if (fillBots) return null;
 
     const room = await db.select().from(gameRooms).where(eq(gameRooms.id, roomId)).limit(1);
     const currentRoom = room[0];
@@ -531,6 +532,7 @@ async function createOrStartRoomGameLocked(roomId: number, fillBots = false) {
 
   const room = getRoomByIdLocal(roomId);
   if (!room) return null;
+  if (fillBots) return null;
   if (fillBots && !room.allowBot) return null;
   if (fillBots) ensureRoomReadyWithBots(roomId);
   if (!room.allowBot && room.currentPlayers < room.maxPlayers) return null;

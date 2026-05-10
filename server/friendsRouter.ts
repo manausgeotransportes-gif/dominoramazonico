@@ -23,7 +23,7 @@ export const friendsRouter = router({
     );
 
     return userList
-      .filter((user) => user.id !== ctx.user.id && (user.loginMethod ?? "") !== "bot")
+      .filter((user) => (user.loginMethod ?? "") !== "bot")
       .map((user) => {
         const related = inviteList.filter(
           (invite) =>
@@ -38,6 +38,7 @@ export const friendsRouter = router({
           email: user.email,
           isOnline: user.isOnline,
           isPlaying: user.isPlaying,
+          isSelf: user.id === ctx.user.id,
           isBlocked: Boolean(user.blockedUntil && new Date() < user.blockedUntil),
           isFriend,
           hasPendingInvite: pendingInvite,

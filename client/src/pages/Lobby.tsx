@@ -7,7 +7,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import {
-  Bot,
   Calendar,
   Check,
   Crown,
@@ -87,7 +86,6 @@ export default function Lobby() {
   const [, navigate] = useLocation();
   const pendingCreateModeRef = useRef<"private" | "bot">("private");
   const [roomName, setRoomName] = useState("");
-  const [allowBot, setAllowBot] = useState(false);
   const [selectedFriendId, setSelectedFriendId] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [roomFilter, setRoomFilter] = useState<RoomFilter>("public");
@@ -106,7 +104,7 @@ export default function Lobby() {
   const playerAvatar = resolvePlayerAvatar(playerProfile);
   const rankingQuery = trpc.ranking.getPlayerRanking.useQuery(undefined, { enabled: isAuthenticated });
   const topPlayersQuery = trpc.ranking.getTopPlayers.useQuery(undefined, { enabled: isAuthenticated });
-  const publicRoomsQuery = trpc.rooms.listOpenRooms.useQuery({ limit: 60, onlyPublic: true }, { refetchInterval: 3000 });
+  const publicRoomsQuery = trpc.rooms.listOpenRooms.useQuery({ limit: 1, onlyPublic: true }, { refetchInterval: 3000 });
   const privateRoomsQuery = trpc.rooms.searchPrivateRooms.useQuery(searchQuery, { enabled: roomFilter === "private" });
   const myWaitingRoomQuery = trpc.rooms.getMyWaitingRoom.useQuery(undefined, {
     enabled: isAuthenticated,
@@ -129,16 +127,10 @@ export default function Lobby() {
   const createRoomMutation = trpc.rooms.createRoom.useMutation({
     onSuccess: (data) => {
       if (selectedFriendId) sendInviteMutation.mutate({ toUserId: selectedFriendId, gameId: data.roomId });
-      if (pendingCreateModeRef.current === "bot") {
-        toast.success("Sala com bots criada. Iniciando a partida.");
-        navigate(`/game/${data.roomId}`);
-        return;
-      }
       toast.success("Sala privada criada. Aguardando na sala.");
       setWaitingRoom({ roomId: data.roomId, position: 1 });
       setSelectedRooms({});
       setRoomName("");
-      setAllowBot(false);
       setSelectedFriendId(null);
       setRoomFilter("private");
       setSearchQuery("");
@@ -239,7 +231,7 @@ export default function Lobby() {
     createRoomMutation.mutate({
       name: roomName || `Sala privada de ${user?.name || "Jogador"}`,
       isPrivate: true,
-      allowBot: mode === "bot" || allowBot,
+      allowBot: false,
     });
   };
 
@@ -322,14 +314,6 @@ export default function Lobby() {
                 className={`h-10 ${theme.field}`}
               />
 
-              <label className={`flex cursor-pointer items-center justify-between rounded-lg border px-3 py-2 text-sm font-semibold ${theme.subtleButton}`}>
-                <span className="flex items-center gap-2">
-                  <Bot className="h-4 w-4 text-amber-300" />
-                  Permitir jogar com bot
-                </span>
-                <input type="checkbox" checked={allowBot} onChange={(event) => setAllowBot(event.target.checked)} />
-              </label>
-
               <select
                 value={selectedFriendId ?? ""}
                 onChange={(event) => setSelectedFriendId(event.target.value ? Number(event.target.value) : null)}
@@ -345,10 +329,6 @@ export default function Lobby() {
 
               <Button className="h-10 w-full bg-emerald-600 font-semibold hover:bg-emerald-500" onClick={() => createConfiguredRoom("private")}>
                     {createRoomMutation.isPending ? "Criando..." : "Criar sala privada"}
-              </Button>
-              <Button variant="outline" className={`h-10 w-full ${appearance === "light" ? "border-amber-900/15 bg-amber-50 text-amber-950 hover:bg-amber-100" : "border-amber-400/25 bg-amber-500/10 text-amber-100 hover:bg-amber-500/20"}`} onClick={() => createConfiguredRoom("bot")}>
-                <Bot className="mr-2 h-4 w-4" />
-                Jogar com bot
               </Button>
             </CardContent>
           </Card>
@@ -534,7 +514,7 @@ export default function Lobby() {
                   onlinePlayers.map((player: any) => (
                     <div key={player.id} className={`flex items-center justify-between rounded-lg border px-3 py-2 ${theme.subtleButton} transition`}>
                       <div className="min-w-0 flex-1">
-                        <div className="truncate text-sm font-semibold">{player.name}</div>
+                        <div className="truncate text-sm font-semibold">{player.name}{player.id === user?.id ? " (você)" : ""}</div>
                         <div className={`flex items-center gap-1 text-xs ${appearance === "light" ? "text-emerald-800" : "text-emerald-200"}`}>
                           <div className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
                           {player.isPlaying ? "Jogando" : "Disponível"}
@@ -543,7 +523,7 @@ export default function Lobby() {
                       <Button
                         size="sm"
                         className="h-8 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50"
-                        disabled={player.isPlaying}
+                        disabled={player.isPlaying || player.id === user?.id}
                         onClick={() => {
                           setSelectedFriendId(player.id);
                           toast.info("Amigo selecionado. Crie a sala privada para enviar o convite.");
@@ -612,7 +592,9 @@ function RoomPanel({
   });
   const isFull = room.currentPlayers >= room.maxPlayers;
   const isLight = theme === APPEARANCES.light;
-  const selectedSlotAvailable = selectedPosition ? !slots[selectedPosition - 1] : false;
+  const selectedSlot = selectedPosition ? slots[selectedPosition - 1] : null;
+  const selectedSlotBlocked = Boolean(selectedSlot && selectedSlot.userId !== currentUserId);
+  const selectedIsCurrentWaiting = Boolean(selectedPosition && waitingPosition === selectedPosition);
   const isWaitingHere = Boolean(waitingPosition);
 
   return (
@@ -644,7 +626,7 @@ function RoomPanel({
                 aria-label={label}
                 aria-pressed={selected}
                 title={label}
-                disabled={isJoining || isFull || (filled && !filledByCurrentUser)}
+                disabled={isJoining || (isFull && !filledByCurrentUser) || (filled && !filledByCurrentUser)}
                 onClick={() => {
                   onSelectPosition(position);
                 }}
@@ -674,8 +656,8 @@ function RoomPanel({
           </div>
         </div>
 
-          <Button className="mt-3 h-10 w-full bg-emerald-600 font-semibold hover:bg-emerald-500" disabled={isJoining || isFull || isWaitingHere || !selectedSlotAvailable} onClick={onJoin}>
-          {isWaitingHere ? "Você está aguardando aqui" : isFull ? "Mesa cheia" : isJoining ? "Aguardando..." : selectedPosition ? `Entrar na posição ${selectedPosition}` : "Clique em uma posição"}
+          <Button className="mt-3 h-10 w-full bg-emerald-600 font-semibold hover:bg-emerald-500" disabled={isJoining || isFull || !selectedPosition || selectedSlotBlocked || selectedIsCurrentWaiting} onClick={onJoin}>
+          {selectedIsCurrentWaiting ? "Você está aguardando aqui" : isFull ? "Mesa cheia" : isJoining ? "Aguardando..." : selectedPosition ? `${isWaitingHere ? "Trocar para" : "Confirmar"} posição ${selectedPosition}` : "Clique em uma posição"}
         </Button>
       </CardContent>
     </Card>

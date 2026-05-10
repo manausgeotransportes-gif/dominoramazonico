@@ -114,7 +114,7 @@ function nextAutoRoomName() {
   return name;
 }
 
-async function ensureDbAutoRoomsAvailable(minAvailable = 4) {
+async function ensureDbAutoRoomsAvailable(minAvailable = 1) {
   const drizzle = await db.getDb();
   if (!drizzle) return;
 
@@ -200,12 +200,9 @@ export const roomsRouter = router({
           const room = createRoomLocal({
             name: input.name,
             isPrivate: input.isPrivate,
-            allowBot: input.allowBot,
+            allowBot: false,
             createdBy: ctx.user.id,
           });
-          if (input.allowBot) {
-            await gameService.createOrStartRoomGame(room.id, true);
-          }
           await persistLocalStoreNow();
           return { roomId: room.id, message: "Sala criada com sucesso" };
         }
@@ -219,7 +216,7 @@ export const roomsRouter = router({
           maxPlayers: 4,
           currentPlayers: 1,
           status: "waiting",
-          allowBot: input.isPrivate ? input.allowBot : false,
+          allowBot: false,
         });
 
         const newRooms = await drizzle
@@ -233,9 +230,6 @@ export const roomsRouter = router({
         if (!roomId) throw new Error("Erro ao criar sala");
 
         await drizzle.insert(roomPlayers).values({ roomId, userId: ctx.user.id, seatPosition: 1 });
-        if (input.allowBot) {
-          await gameService.createOrStartRoomGame(roomId, true);
-        }
         return { roomId, message: "Sala criada com sucesso" };
       } catch (error) {
         if (error instanceof TRPCError) throw error;
@@ -252,12 +246,15 @@ export const roomsRouter = router({
         const drizzle = await db.getDb();
         if (!drizzle) {
           const openRooms = listOpenRoomsLocal(input.limit);
-            return input.onlyPublic ? openRooms.filter((room) => !room.isPrivate) : openRooms;
+          const filtered = input.onlyPublic ? openRooms.filter((room) => !room.isPrivate) : openRooms;
+          const sorted = filtered.sort((a, b) => b.currentPlayers - a.currentPlayers || a.id - b.id);
+          return input.onlyPublic ? sorted.slice(0, 1) : sorted.slice(0, input.limit);
         }
-        await ensureDbAutoRoomsAvailable(4);
+        await ensureDbAutoRoomsAvailable(1);
         const openRooms = (await db.listOpenRooms(input.limit * 2)).filter((room) => room.currentPlayers < room.maxPlayers);
         const filtered = input.onlyPublic ? openRooms.filter((room) => !room.isPrivate) : openRooms;
-        return filtered.slice(0, input.limit);
+        const sorted = filtered.sort((a, b) => b.currentPlayers - a.currentPlayers || a.id - b.id);
+        return input.onlyPublic ? sorted.slice(0, 1) : sorted.slice(0, input.limit);
       } catch (error) {
         console.error("Erro ao listar salas:", error);
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Erro ao listar salas" });
@@ -364,9 +361,9 @@ export const roomsRouter = router({
         .where(eq(rooms.id, roomId));
       if (nextCount >= room.maxPlayers) {
         await gameService.createOrStartRoomGame(roomId, false);
-        await ensureDbAutoRoomsAvailable(4);
+        await ensureDbAutoRoomsAvailable(1);
       }
-      await ensureDbAutoRoomsAvailable(4);
+      await ensureDbAutoRoomsAvailable(1);
       return {
         message: nextCount >= room.maxPlayers ? "Partida iniciada" : "Aguardando na sala",
         roomId,
@@ -416,7 +413,7 @@ export const roomsRouter = router({
           }
         }
 
-        await ensureDbAutoRoomsAvailable(4);
+        await ensureDbAutoRoomsAvailable(1);
         return { message: "Jogador substituído por bot" };
       }
 
@@ -498,7 +495,7 @@ export const roomsRouter = router({
             .set({ currentPlayers: nextCount, status: nextCount >= candidate.maxPlayers ? "playing" : candidate.status })
             .where(eq(rooms.id, candidate.id));
         }
-        await ensureDbAutoRoomsAvailable(4);
+        await ensureDbAutoRoomsAvailable(1);
         return { roomId: candidate.id, action: "joined" as const };
       }
 
@@ -515,7 +512,7 @@ export const roomsRouter = router({
       const roomId = newRooms[0]?.id;
       if (!roomId) throw new Error("Erro ao criar sala de matchmaking");
       await drizzle.insert(roomPlayers).values({ roomId, userId: ctx.user.id, seatPosition: 1 });
-      await ensureDbAutoRoomsAvailable(4);
+      await ensureDbAutoRoomsAvailable(1);
       return { roomId, action: "created" as const };
     } catch (error) {
       if (error instanceof TRPCError) throw error;
