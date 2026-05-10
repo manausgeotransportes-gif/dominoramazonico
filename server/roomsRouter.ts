@@ -4,7 +4,7 @@ import * as db from "./db";
 import * as gameService from "./gameService";
 import { TRPCError } from "@trpc/server";
 import { games, gamePlayers, rooms, roomPlayers, users } from "../drizzle/schema";
-import { desc, eq, and, lt } from "drizzle-orm";
+import { asc, desc, eq, and, lt } from "drizzle-orm";
 import {
   cleanupExpiredPrivateRoomsLocal,
   createRoomLocal,
@@ -423,6 +423,7 @@ export const roomsRouter = router({
       await drizzle.delete(roomPlayers).where(and(eq(roomPlayers.roomId, roomId), eq(roomPlayers.userId, ctx.user.id)));
       const newCount = Math.max(0, room.currentPlayers - 1);
       await drizzle.update(rooms).set({ currentPlayers: newCount }).where(eq(rooms.id, roomId));
+      await drizzle.update(users).set({ isPlaying: false }).where(eq(users.id, ctx.user.id));
       if (newCount === 0) await db.updateRoomStatus(roomId, "closed");
       return { message: "Saiu da sala com sucesso" };
     } catch (error) {
@@ -528,8 +529,21 @@ export const roomsRouter = router({
       const drizzle = await db.getDb();
       if (!drizzle) return getRoomPlayersLocal(roomId);
 
-      const players = await drizzle.select().from(roomPlayers).where(eq(roomPlayers.roomId, roomId));
-      return players;
+      const players = await drizzle.select().from(roomPlayers).where(eq(roomPlayers.roomId, roomId)).orderBy(asc(roomPlayers.seatPosition));
+      const enriched = [];
+      for (const player of players) {
+        const userRows = await drizzle.select().from(users).where(eq(users.id, player.userId)).limit(1);
+        const user = userRows[0];
+        enriched.push({
+          ...player,
+          name: user?.name ?? `Jogador ${player.seatPosition}`,
+          email: user?.email ?? null,
+          loginMethod: user?.loginMethod ?? null,
+          isOnline: user?.isOnline ?? false,
+          isPlaying: user?.isPlaying ?? false,
+        });
+      }
+      return enriched;
     } catch (error) {
       console.error("Erro ao obter jogadores da sala:", error);
       throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Erro ao obter jogadores" });

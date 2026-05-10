@@ -20,7 +20,7 @@ function Router() {
 
   return (
     <Switch>
-      <Route path={"/game/:gameId"} component={GamePage} />
+      <Route path={"/game/:roomId"} component={GamePage} />
       <Route path={"/"} component={Home} />
       <Route path={"/lobby"} component={Lobby} />
       <Route path={"/ranking"} component={Ranking} />

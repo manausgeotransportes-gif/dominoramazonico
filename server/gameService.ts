@@ -999,6 +999,11 @@ export async function getGameState(gameId: number): Promise<GameState | null> {
 
   const playerScores = playerList.map((p) => p.score);
   const playerIds = playerList.map((p) => p.userId);
+  const playerNames: string[] = [];
+  for (const playerId of playerIds) {
+    const userRows = await db.select().from(users).where(eq(users.id, playerId)).limit(1);
+    playerNames.push(userRows[0]?.name ?? `Jogador ${playerId}`);
+  }
   const teamScores = playerScores.reduce<number[]>((scores, score, index) => {
     const team = getTeamIndex(index, playerIds.length);
     scores[team] = (scores[team] ?? 0) + score;
@@ -1015,6 +1020,7 @@ export async function getGameState(gameId: number): Promise<GameState | null> {
     playerHands: playerList.map((p) => (p.hand as Domino[]) ?? []),
     playerScores,
     playerIds,
+    playerNames,
     isBotPlayer: playerList.map((p) => p.isBot),
     winnerId: game.winnerId,
     winnerTeam: null,

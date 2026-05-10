@@ -10,19 +10,21 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import { ArrowLeft, Loader2, Maximize2, Users } from "lucide-react";
 
 export default function GamePage() {
-  const [match, params] = useRoute("/game/:gameId");
+  const [match, params] = useRoute("/game/:roomId");
   const pageRef = useRef<HTMLDivElement>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const scorePanelRef = useRef<ScorePanelHandle>(null);
   const [location, navigate] = useLocation();
   const pathname = typeof window !== "undefined" ? window.location.pathname : location;
-  const routeGameId = params?.gameId ?? pathname.match(/^\/game\/([^/?#]+)\/?$/)?.[1] ?? location.match(/^\/game\/([^/?#]+)\/?$/)?.[1];
-  const roomId = routeGameId ? parseInt(routeGameId, 10) : NaN;
+  const routeRoomId = params?.roomId ?? pathname.match(/^\/game\/([^/?#]+)\/?$/)?.[1] ?? location.match(/^\/game\/([^/?#]+)\/?$/)?.[1];
+  const roomId = routeRoomId ? parseInt(routeRoomId, 10) : NaN;
   const canUseRoomId = (match || pathname.startsWith("/game/") || location.startsWith("/game/")) && Number.isFinite(roomId);
   const { isAuthenticated, user } = useAuth({ redirectOnUnauthenticated: true, redirectPath: "/" });
+  const utils = trpc.useUtils();
 
   const leaveRoomMutation = trpc.rooms.leaveRoom.useMutation();
   const playMoveMutation = trpc.games.playMove.useMutation();
+  const passMoveMutation = trpc.games.passMove.useMutation();
   const finishRoomMatchMutation = trpc.games.finishRoomMatch.useMutation({
     onSuccess: () => {
       refetchRanking();
@@ -66,7 +68,18 @@ export default function GamePage() {
       },
       "*"
     );
-  }, [canUseRoomId, players, ranking, user]);
+
+    if (roomGameState) {
+      iframeRef.current.contentWindow.postMessage(
+        {
+          type: "game-state",
+          gameState: roomGameState,
+          currentUserId: user?.id ?? null,
+        },
+        "*"
+      );
+    }
+  }, [canUseRoomId, players, ranking, roomGameState, user]);
 
   const sendToTable = useCallback((payload: unknown) => {
     iframeRef.current?.contentWindow?.postMessage(payload, "*");
@@ -102,13 +115,21 @@ export default function GamePage() {
 
     try {
       await leaveRoomMutation.mutateAsync(roomId);
+      await Promise.all([
+        utils.rooms.getRoomPlayers.invalidate(roomId),
+        utils.rooms.getRoomById.invalidate(roomId),
+        utils.rooms.getMyWaitingRoom.invalidate(),
+        utils.rooms.listOpenRooms.invalidate(),
+        utils.rooms.searchPrivateRooms.invalidate(),
+        utils.games.getRoomGameState.invalidate(roomId),
+      ]);
       toast.success("Você saiu da sala.");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Não foi possível sair da sala corretamente.");
     } finally {
       navigate("/lobby");
     }
-  }, [canUseRoomId, leaveRoomMutation, navigate, roomId]);
+  }, [canUseRoomId, leaveRoomMutation, navigate, roomId, utils]);
 
   useEffect(() => {
     syncIframe();
@@ -162,6 +183,40 @@ export default function GamePage() {
         toast.success(event.data.message || "Partida encerrada. Resultado registrado.");
         finishRoomMatchMutation.mutate({ roomId, winnerPlayerIndex });
       }
+      if (event.data?.type === "play-move" && canUseRoomId && roomGameState && user?.id) {
+        const playerIndex = roomGameState.playerIds.findIndex((id: number) => id === user.id);
+        if (playerIndex < 0) return;
+        const domino = event.data.domino;
+        const rawSide = event.data.side === "center" ? "left" : event.data.side;
+        const side = ["left", "right", "up", "down"].includes(rawSide) ? rawSide : "left";
+        playMoveMutation
+          .mutateAsync({
+            gameId: roomGameState.gameId,
+            playerIndex,
+            domino,
+            side,
+            action: event.data.action ?? "normal",
+            announcedPoints: scorePanelRef.current?.getPoints() ?? 0,
+          })
+          .then(() => {
+            scorePanelRef.current?.resetPoints();
+            scorePanelRef.current?.resetGalo();
+            utils.games.getRoomGameState.invalidate(roomId);
+          })
+          .catch((error) => toast.error(error instanceof Error ? error.message : "Jogada inválida."));
+      }
+      if (event.data?.type === "pass-move" && canUseRoomId && roomGameState && user?.id) {
+        const playerIndex = roomGameState.playerIds.findIndex((id: number) => id === user.id);
+        if (playerIndex < 0) return;
+        passMoveMutation
+          .mutateAsync({ gameId: roomGameState.gameId, playerIndex })
+          .then(() => {
+            scorePanelRef.current?.resetPoints();
+            scorePanelRef.current?.resetGalo();
+            utils.games.getRoomGameState.invalidate(roomId);
+          })
+          .catch((error) => toast.error(error instanceof Error ? error.message : "Passe inválido."));
+      }
     };
 
     window.addEventListener("storage", onStorage);
@@ -170,7 +225,7 @@ export default function GamePage() {
       window.removeEventListener("storage", onStorage);
       window.removeEventListener("message", onMessage);
     };
-  }, [canUseRoomId, finishRoomMatchMutation, leaveRoomAndReturn, ranking, roomId, syncIframe]);
+  }, [canUseRoomId, finishRoomMatchMutation, leaveRoomAndReturn, passMoveMutation, playMoveMutation, ranking, roomGameState, roomId, syncIframe, user?.id, utils]);
 
   if (!canUseRoomId) {
     return (
@@ -283,7 +338,7 @@ export default function GamePage() {
     >
       <iframe
         ref={iframeRef}
-        src="/domino-mesa/index.html"
+        src="/domino-mesa/index.html?multiplayer=1"
         title="Mesa de Dominó"
         className="block h-full w-full"
         style={{ border: "none" }}

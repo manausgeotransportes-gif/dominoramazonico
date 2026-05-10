@@ -92,6 +92,7 @@ export default function Lobby() {
   const [searchQuery, setSearchQuery] = useState("");
   const [roomFilter, setRoomFilter] = useState<RoomFilter>("public");
   const [selectedRooms, setSelectedRooms] = useState<Record<number, number>>({});
+  const [joiningRoomId, setJoiningRoomId] = useState<number | null>(null);
   const [waitingRoom, setWaitingRoom] = useState<{ roomId: number; position: number | null } | null>(null);
   const [playerProfile, setPlayerProfile] = useState(loadPlayerProfile());
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -147,6 +148,17 @@ export default function Lobby() {
     onError: (error) => toast.error(error.message || "Erro ao criar sala"),
   });
 
+  const refreshRoomData = async (roomId?: number) => {
+    await Promise.all([
+      utils.rooms.listOpenRooms.invalidate(),
+      utils.rooms.searchPrivateRooms.invalidate(),
+      utils.rooms.getMyWaitingRoom.invalidate(),
+      roomId ? utils.rooms.getRoomPlayers.invalidate(roomId) : utils.rooms.getRoomPlayers.invalidate(),
+      roomId ? utils.rooms.getRoomById.invalidate(roomId) : utils.rooms.getRoomById.invalidate(),
+      availableUsersQuery.refetch(),
+    ]);
+  };
+
   const joinRoomMutation = trpc.rooms.joinRoom.useMutation({
     onSuccess: (data) => {
       const joinedRoomIsReady =
@@ -154,17 +166,17 @@ export default function Lobby() {
         (typeof data.currentPlayers === "number" && typeof data.maxPlayers === "number" && data.currentPlayers >= data.maxPlayers);
       if (joinedRoomIsReady) {
         toast.success("Mesa completa. Iniciando a partida.");
+        refreshRoomData(data.roomId);
         navigate(`/game/${data.roomId}`);
         return;
       }
       toast.success(data.position ? `Aguardando na sala, posição ${data.position}.` : "Aguardando na sala.");
       setWaitingRoom({ roomId: data.roomId, position: data.position ?? null });
-      utils.rooms.getMyWaitingRoom.invalidate();
-      publicRoomsQuery.refetch();
-      privateRoomsQuery.refetch();
+      refreshRoomData(data.roomId);
       setSelectedRooms({});
     },
     onError: (error) => toast.error(error.message || "Erro ao entrar na sala"),
+    onSettled: () => setJoiningRoomId(null),
   });
 
   const rooms = useMemo(() => {
@@ -494,14 +506,15 @@ export default function Lobby() {
                         selectedPosition={selectedPosition}
                         waitingPosition={waitingPosition}
                         currentUserId={user?.id ?? null}
-                        isJoining={joinRoomMutation.isPending}
+                        isJoining={joiningRoomId === room.id && joinRoomMutation.isPending}
                         onSelectPosition={(position) => {
-                          if (joinRoomMutation.isPending) return;
                           setSelectedRooms({ [room.id]: position });
-                          if (waitingRoom && waitingRoom.roomId === room.id && waitingRoom.position === position) return;
-                          joinRoomMutation.mutate({ roomId: room.id, position });
                         }}
-                        onJoin={() => joinRoomMutation.mutate({ roomId: room.id, position: selectedPosition ?? undefined })}
+                        onJoin={() => {
+                          if (!selectedPosition || joinRoomMutation.isPending) return;
+                          setJoiningRoomId(room.id);
+                          joinRoomMutation.mutate({ roomId: room.id, position: selectedPosition });
+                        }}
                       />
                     );
                   })

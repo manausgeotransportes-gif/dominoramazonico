@@ -70,6 +70,9 @@ export default class DominoAmazonicoScene extends Phaser.Scene {
     this.previousRoundOutcome = 'first';
     this.lastRoundWinnerId = null;
     this.currentOpeningRequirement = { type: 'exact', a: 6, b: 6 };
+    this.isExternalMultiplayer = new URLSearchParams(window.location.search).get('multiplayer') === '1';
+    this.isApplyingExternalState = false;
+    this.externalServerToLocal = [0, 1, 2, 3];
 
     // Inicializar variáveis para controles da UI
     this.pendingAnnouncement = 0;
@@ -113,7 +116,12 @@ export default class DominoAmazonicoScene extends Phaser.Scene {
     this.generateAllTileTextures();
     this.createLayout();
     this.createToast();
-    this.startNewRound();
+    if (this.isExternalMultiplayer) {
+      this.setTurnText('Aguardando estado da partida', this.players[0]);
+      this.toast('Conectando na mesa online...');
+    } else {
+      this.startNewRound();
+    }
 
     this.scale.on('resize', () => {
       this.drawBackground(BG_THEMES[this.currentBgThemeIndex]);
@@ -1344,6 +1352,19 @@ export default class DominoAmazonicoScene extends Phaser.Scene {
   playTile(player, tile, requestedSide, isOpening = false) {
     if (this.pendingReset) return;
 
+    if (this.isExternalMultiplayer && !this.isApplyingExternalState && player && player.isHuman) {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage({
+          type: 'play-move',
+          domino: { left: tile.a, right: tile.b },
+          side: requestedSide,
+          action: this.pendingGalo ? 'galo' : 'normal'
+        }, '*');
+      }
+      this.returnTileHome(tile.sprite);
+      return;
+    }
+
     const validSides = this.getValidSides(tile);
     if (!validSides.includes(requestedSide)) {
       if (player.isHuman && validSides.length === 1) {
@@ -1578,6 +1599,7 @@ export default class DominoAmazonicoScene extends Phaser.Scene {
   }
 
   advanceTurn() {
+    if (this.isExternalMultiplayer && !this.isApplyingExternalState) return;
     this.currentPlayerIndex = (this.currentPlayerIndex + 1) % this.players.length;
     this.turnLocked = false;
     const player = this.players[this.currentPlayerIndex];
@@ -1654,6 +1676,13 @@ export default class DominoAmazonicoScene extends Phaser.Scene {
 
   handlePass(player) {
     if (this.pendingReset) return;
+
+    if (this.isExternalMultiplayer && !this.isApplyingExternalState && player && player.isHuman) {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage({ type: 'pass-move' }, '*');
+      }
+      return;
+    }
 
     const hasPlayableTile = player.hand.some((tile) => this.getValidSides(tile).length > 0);
     const firstPassInChain = this.passChain === 0;
@@ -2152,6 +2181,10 @@ export default class DominoAmazonicoScene extends Phaser.Scene {
   }
 
   restartRoundFromUI() {
+    if (this.isExternalMultiplayer) {
+      this.toast('A mesa online e sincronizada pelo servidor');
+      return;
+    }
     this.toast('Nova rodada iniciada');
     this.startNewRound();
   }
@@ -2438,6 +2471,125 @@ export default class DominoAmazonicoScene extends Phaser.Scene {
       }
     });
     this.updatePlayerCounters();
+  }
+
+  toSceneTile(domino, id) {
+    return {
+      id,
+      a: Number(domino?.left ?? domino?.a ?? 0),
+      b: Number(domino?.right ?? domino?.b ?? 0),
+      ownerId: null,
+      sprite: null
+    };
+  }
+
+  buildExternalPlayerOrder(gameState, currentUserId) {
+    const ids = Array.isArray(gameState?.playerIds) ? gameState.playerIds : [];
+    const currentIndex = ids.findIndex((id) => Number(id) === Number(currentUserId));
+    const serverOrder = currentIndex >= 0
+      ? [currentIndex, ...ids.map((_id, index) => index).filter((index) => index !== currentIndex)]
+      : ids.map((_id, index) => index);
+    while (serverOrder.length < 4) serverOrder.push(serverOrder.length);
+    this.externalServerToLocal = [];
+    serverOrder.forEach((serverIndex, localIndex) => {
+      this.externalServerToLocal[serverIndex] = localIndex;
+    });
+    return serverOrder.slice(0, 4);
+  }
+
+  renderExternalBoard(boardState) {
+    this.boardContainer.removeAll(true);
+    this.boardTiles = [];
+    this.centerTile = null;
+    this.centerValue = null;
+    this.spinnerCenter = false;
+    this.sideCounts = { left: 0, right: 0, up: 0, down: 0 };
+    this.openSides = { left: null, right: null, up: null, down: null };
+
+    const branches = boardState?.branches || {};
+    let tileId = 1000;
+    const centerDomino = branches.center || (Array.isArray(boardState?.played) ? boardState.played[0] : null);
+    if (!centerDomino) return;
+
+    const centerTile = this.toSceneTile(centerDomino, tileId++);
+    const entries = [{ tile: centerTile, side: 'center' }];
+    BOARD_SIDES.forEach((side) => {
+      const branch = Array.isArray(branches[side]) ? branches[side] : [];
+      branch.forEach((domino) => entries.push({ tile: this.toSceneTile(domino, tileId++), side }));
+      this.sideCounts[side] = branch.length;
+      this.openSides[side] = branch.length ? Number(branch[branch.length - 1]?.right ?? branch[branch.length - 1]?.b ?? null) : null;
+    });
+
+    this.boardTiles = entries.map((entry) => ({ ...entry, sprite: null }));
+    this.currentBoardScale = this.getBoardScale(this.boardTiles.length || 1);
+    const placements = this.computeBoardPlacements(this.currentBoardScale).byTileId;
+    this.boardTiles.forEach((entry, index) => {
+      const placement = placements[entry.tile.id];
+      if (!placement) return;
+      const sprite = this.add.image(placement.x, placement.y, this.getFaceTextureKey(entry.tile))
+        .setRotation(placement.rotation)
+        .setScale(this.currentBoardScale)
+        .setDepth(140 + index);
+      this.boardContainer.add(sprite);
+      entry.sprite = sprite;
+      entry.rotation = placement.rotation;
+      entry.slotIndex = placement.slotIndex || 0;
+      entry.lineDir = placement.lineDir;
+      entry.layoutState = placement.layoutState ? { ...placement.layoutState } : null;
+    });
+
+    this.centerTile = centerTile;
+    this.centerValue = centerTile.a;
+    this.spinnerCenter = centerTile.a === centerTile.b;
+  }
+
+  applyExternalGameState(gameState, currentUserId) {
+    if (!gameState || !Array.isArray(this.players)) return;
+    this.isExternalMultiplayer = true;
+    this.isApplyingExternalState = true;
+
+    this.hideSnapPreview();
+    this.handsContainer.removeAll(true);
+    this.players.forEach((player) => { player.hand = []; });
+
+    const serverOrder = this.buildExternalPlayerOrder(gameState, currentUserId);
+    const hands = Array.isArray(gameState.playerHands) ? gameState.playerHands : [];
+    const names = Array.isArray(gameState.playerNames) ? gameState.playerNames : [];
+    const botFlags = Array.isArray(gameState.isBotPlayer) ? gameState.isBotPlayer : [];
+    const scores = Array.isArray(gameState.playerScores) ? gameState.playerScores : [];
+    const teamScores = Array.isArray(gameState.teamScores) ? gameState.teamScores : null;
+    let tileId = 1;
+
+    serverOrder.forEach((serverIndex, localIndex) => {
+      const player = this.players[localIndex];
+      if (!player) return;
+      player.name = names[serverIndex] || (localIndex === 0 ? 'Você' : `Jogador ${serverIndex + 1}`);
+      player.isHuman = localIndex === 0 && !botFlags[serverIndex];
+      player.isStandIn = Boolean(botFlags[serverIndex]);
+      player.score = scores[serverIndex] || 0;
+      player.hand = (hands[serverIndex] || []).map((domino) => {
+        const tile = this.toSceneTile(domino, tileId++);
+        tile.ownerId = player.id;
+        return tile;
+      });
+      if (player.nameText) player.nameText.setText(player.name);
+    });
+
+    if (teamScores) this.teamScores = teamScores;
+    this.boardState = gameState.boardState || { left: null, right: null, up: null, down: null, played: [], branches: { center: null, left: [], right: [], up: [], down: [] } };
+    this.playedFirstTile = Boolean(this.boardState?.branches?.center || (this.boardState?.played || []).length);
+    this.roundNumber = gameState.roundNumber || this.roundNumber || 1;
+    this.currentPlayerIndex = this.externalServerToLocal[gameState.currentPlayerIndex] ?? 0;
+    this.pendingReset = gameState.status === 'finished' || gameState.status === 'abandoned';
+    this.turnLocked = this.pendingReset || this.currentPlayerIndex !== 0;
+
+    this.renderExternalBoard(this.boardState);
+    this.layoutHands(false);
+    const current = this.players[this.currentPlayerIndex] || this.players[0];
+    this.setTurnText(this.currentPlayerIndex === 0 ? 'Sua vez' : 'Vez de ' + current.name, current);
+    this.positionTurnBadge(current);
+    this.updatePlayerCounters();
+    this.isApplyingExternalState = false;
   }
 
   updatePointsDisplay() {

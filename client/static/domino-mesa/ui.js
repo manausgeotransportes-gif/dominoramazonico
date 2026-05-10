@@ -388,6 +388,10 @@ export function initDominoAmazonicoUI(game) {
       scene.applyExternalProfile({ profile: event.data.profile || null, stats: event.data.stats || null });
       api.syncSettingsState();
     }
+    if (event.data.type === 'game-state' && typeof scene.applyExternalGameState === 'function') {
+      scene.applyExternalGameState(event.data.gameState || null, event.data.currentUserId || null);
+      api.syncSettingsState();
+    }
     if (event.data.type === 'set-announcement') {
       const points = Math.max(0, Math.min(200, Number(event.data.points) || 0));
       scene.pendingAnnouncement = points;
