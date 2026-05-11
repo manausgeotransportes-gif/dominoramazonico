@@ -106,20 +106,20 @@ export default function Lobby() {
   const playerAvatar = resolvePlayerAvatar(playerProfile);
   const rankingQuery = trpc.ranking.getPlayerRanking.useQuery(undefined, { enabled: isAuthenticated });
   const topPlayersQuery = trpc.ranking.getTopPlayers.useQuery(undefined, { enabled: isAuthenticated });
-  const publicRoomsQuery = trpc.rooms.listOpenRooms.useQuery({ limit: 4, onlyPublic: true }, { refetchInterval: 1000 });
+  const publicRoomsQuery = trpc.rooms.listOpenRooms.useQuery({ limit: 4, onlyPublic: true }, { refetchInterval: 500 });
   const privateRoomsQuery = trpc.rooms.searchPrivateRooms.useQuery(searchQuery, { enabled: roomFilter === "private", refetchInterval: 1000 });
   const myWaitingRoomQuery = trpc.rooms.getMyWaitingRoom.useQuery(undefined, {
     enabled: isAuthenticated,
-    refetchInterval: 1000,
+    refetchInterval: 500,
     retry: false,
   });
   const waitingRoomQuery = trpc.rooms.getRoomById.useQuery(waitingRoom?.roomId ?? 0, {
     enabled: Boolean(waitingRoom?.roomId),
-    refetchInterval: 1000,
+    refetchInterval: 500,
     retry: false,
   });
   const friendsQuery = trpc.friends.listFriends.useQuery(undefined, { enabled: isAuthenticated, refetchInterval: 3000 });
-  const availableUsersQuery = trpc.friends.listAvailableUsers.useQuery(undefined, { enabled: isAuthenticated, refetchInterval: 1000 });
+  const availableUsersQuery = trpc.friends.listAvailableUsers.useQuery(undefined, { enabled: isAuthenticated, refetchInterval: 500 });
   const heartbeatMutation = trpc.auth.heartbeat.useMutation();
   const startRoomGameMutation = trpc.games.startRoomGame.useMutation({
     onSuccess: (gameState) => {
@@ -182,8 +182,11 @@ export default function Lobby() {
 
   const joinRoomMutation = trpc.rooms.joinRoom.useMutation({
     onSuccess: (data) => {
+      console.log(`[JoinRoom] Sucesso:`, data);
+      
       // Verifica se é uma ação de saída (quando já estava na sala)
       if ((data as any).action === "left") {
+        console.log(`[JoinRoom] Ação: saída da posição`);
         toast.success("Você saiu da posição.");
         setWaitingRoom(null);
         setSelectedRooms({});
@@ -194,18 +197,25 @@ export default function Lobby() {
       const joinedRoomIsReady =
         data.status === "playing" ||
         (typeof data.currentPlayers === "number" && typeof data.maxPlayers === "number" && data.currentPlayers >= data.maxPlayers);
+      
       if (joinedRoomIsReady) {
+        console.log(`[JoinRoom] Sala pronta para jogar`);
         toast.success("Mesa completa. Iniciando a partida.");
         refreshRoomData(data.roomId);
         navigate(`/game/${data.roomId}`);
         return;
       }
+      
+      console.log(`[JoinRoom] Ação: entrada na sala, posição ${data.position}`);
       toast.success(data.position ? `Aguardando na sala, posição ${data.position}.` : "Aguardando na sala.");
       setWaitingRoom({ roomId: data.roomId, position: data.position ?? null });
       refreshRoomData(data.roomId);
       setSelectedRooms({});
     },
-    onError: (error) => toast.error(error.message || "Erro ao entrar na sala"),
+    onError: (error) => {
+      console.error(`[JoinRoom] Erro:`, error);
+      toast.error(error.message || "Erro ao entrar na sala");
+    },
     onSettled: () => setJoiningRoomId(null),
   });
 
@@ -217,7 +227,8 @@ export default function Lobby() {
   }, [roomFilter, publicRoomsQuery.data, privateRoomsQuery.data]);
 
   const friends = friendsQuery.data ?? [];
-  const onlinePlayers = availableUsersQuery.data?.filter((player: any) => player.isOnline) ?? [];
+  const onlinePlayers = availableUsersQuery.data ?? [];  // Já vem filtrado do servidor
+  console.log(`[Lobby] Jogadores online: ${onlinePlayers.length}`, onlinePlayers.map((p: any) => `${p.name} (${p.id})`).join(", "));
   const emptyPublicRoomCards = roomFilter === "public" ? Math.max(0, 4 - rooms.length) : 0;
   const tier = getCompetitiveTier(rankingQuery.data?.totalPoints ?? 0);
   const theme = APPEARANCES[appearance];
@@ -235,44 +246,65 @@ export default function Lobby() {
 
   useEffect(() => {
     if (!isAuthenticated) return;
+    
+    // Enviar heartbeat imediatamente
     heartbeatMutation.mutate();
-    const timer = window.setInterval(() => heartbeatMutation.mutate(), 10_000);
-    const sendPresenceLogout = () => {
+    
+    // Enviar heartbeat frequentemente para manter presence
+    const heartbeatTimer = window.setInterval(() => {
+      console.log(`[Heartbeat] Enviando presença para manter online...`);
+      heartbeatMutation.mutate();
+    }, 5_000);
+    
+    const sendPresenceLogout = async () => {
+      console.log(`[Presence] Logout - enviando presença de saída...`);
       const localUserId = window.localStorage.getItem("domino_local_user_id");
       const payload = JSON.stringify({ localUserId: localUserId ? Number(localUserId) : undefined });
+      
       if (navigator.sendBeacon) {
         const sent = navigator.sendBeacon("/api/presence/logout", new Blob([payload], { type: "application/json" }));
         if (sent) return;
       }
-      fetch("/api/presence/logout", {
-        method: "POST",
-        body: payload,
-        headers: { "content-type": "application/json" },
-        credentials: "include",
-        keepalive: true,
-      }).catch(() => undefined);
+      
+      try {
+        await fetch("/api/presence/logout", {
+          method: "POST",
+          body: payload,
+          headers: { "content-type": "application/json" },
+          credentials: "include",
+          keepalive: true,
+        });
+      } catch (e) {
+        console.error(`[Presence] Erro ao enviar logout:`, e);
+      }
     };
-    const logoutOnExit = () => {
-      sendPresenceLogout();
+    
+    const logoutOnExit = async () => {
+      await sendPresenceLogout();
       logout().catch(() => undefined);
     };
+    
     const handleVisibility = () => {
       if (document.visibilityState === "hidden") {
+        console.log(`[Visibility] Aba oculta - enviando logout`);
         sendPresenceLogout();
       } else {
+        console.log(`[Visibility] Aba visível - enviando heartbeat`);
         heartbeatMutation.mutate();
       }
     };
+    
     window.addEventListener("pagehide", logoutOnExit);
     window.addEventListener("beforeunload", logoutOnExit);
     document.addEventListener("visibilitychange", handleVisibility);
+    
     return () => {
-      window.clearInterval(timer);
+      window.clearInterval(heartbeatTimer);
       window.removeEventListener("pagehide", logoutOnExit);
       window.removeEventListener("beforeunload", logoutOnExit);
       document.removeEventListener("visibilitychange", handleVisibility);
     };
-  }, [isAuthenticated]);
+  }, [isAuthenticated, logout, heartbeatMutation]);
 
   useEffect(() => {
     setSelectedRooms((current) => {
@@ -308,8 +340,12 @@ export default function Lobby() {
 
   const createConfiguredRoom = (mode: "private" | "bot") => {
     pendingCreateModeRef.current = mode;
+    const finalRoomName = roomName.trim() || (mode === "bot" ? `Mesa com bot de ${user?.name || "Jogador"}` : `Sala privada de ${user?.name || "Jogador"}`);
+    
+    console.log(`[CreateRoom] Iniciando com modo: ${mode}, nome: ${finalRoomName}`);
+    
     createRoomMutation.mutate({
-      name: roomName || (mode === "bot" ? `Mesa com bot de ${user?.name || "Jogador"}` : `Sala privada de ${user?.name || "Jogador"}`),
+      name: finalRoomName,
       isPrivate: true,
       allowBot: mode === "bot",
     });
@@ -752,20 +788,28 @@ function RoomPanel({
   onJoin: () => void;
 }) {
   const roomPlayersQuery = trpc.rooms.getRoomPlayers.useQuery(room.id, {
-    refetchInterval: 1000,
+    refetchInterval: 300,  // Quase tempo real
   });
   const waitingPlayers = roomPlayersQuery.data ?? [];
   
-  // Filtrar bots para salas públicas (não devem aparecer em waiting)
-  const onlineHumanPlayers = waitingPlayers.filter((player: any) => !player?.isBot);
+  // Filtrar apenas jogadores humanos online (bots não aparecem em waiting)
+  const onlineHumanPlayers = waitingPlayers.filter((player: any) => {
+    const isBot = player?.loginMethod === "bot";
+    const isOnline = player?.isOnline === true;
+    return !isBot && isOnline;
+  });
+  
+  console.log(`[RoomPanel ${room.id}] Jogadores: ${waitingPlayers.length} total, ${onlineHumanPlayers.length} humanos online`, {
+    waiting: waitingPlayers.map((p: any) => `${p.name||'?'} (pos:${p.seatPosition},bot:${p.isBot},online:${p.isOnline})`),
+  });
   
   const slots = Array.from({ length: room.maxPlayers ?? 4 }, (_, index) => {
     const position = index + 1;
-    return onlineHumanPlayers.find((player: any) => (player.seatPosition ?? player.id) === position);
+    return onlineHumanPlayers.find((player: any) => player?.seatPosition === position);
   });
   
   // Contar apenas jogadores humanos online
-  const onlinePlayersCount = slots.filter((player: any) => Boolean(player) && player?.isOnline).length;
+  const onlinePlayersCount = slots.filter((player: any) => Boolean(player)).length;
   const isFull = onlinePlayersCount >= (room.maxPlayers ?? 4);
   const isLight = theme === APPEARANCES.light;
   const selectedSlot = selectedPosition ? slots[selectedPosition - 1] : null;

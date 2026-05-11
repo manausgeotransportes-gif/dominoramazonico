@@ -98,7 +98,8 @@ export const appRouter = router({
       const drizzle = await getDb();
       if (drizzle && ctx.user?.id) {
         await cleanupStaleOnlineUsers();
-        await drizzle.update(users).set({ isOnline: true }).where(eq(users.id, ctx.user.id));
+        console.log(`[Heartbeat] Marcando usuário ${ctx.user.id} (${ctx.user.name}) como online`);
+        await drizzle.update(users).set({ isOnline: true, updatedAt: new Date() }).where(eq(users.id, ctx.user.id));
       }
       return { success: true } as const;
     }),

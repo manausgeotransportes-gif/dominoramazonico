@@ -195,8 +195,8 @@ async function ensureDbAutoRoomsAvailable(minAvailable = 4) {
   }
 }
 
-export async function cleanupStaleOnlineUsers(maxAgeMs = 20_000) {
-  const drizzle = await db.getDb();
+export async function cleanupStaleOnlineUsers(maxAgeMs = 90_000) {
+  const drizzle = await getDb();
   if (!drizzle) {
     cleanupStaleLocalUsers(maxAgeMs);
     return;
@@ -208,8 +208,13 @@ export async function cleanupStaleOnlineUsers(maxAgeMs = 20_000) {
     .from(users)
     .where(and(eq(users.isOnline, true), lt(users.updatedAt, cutoff)));
 
+  if (staleUsers.length > 0) {
+    console.log(`[Presence] Limpando ${staleUsers.length} usuários stale (cutoff: ${cutoff.toISOString()})`);
+  }
+
   for (const user of staleUsers) {
     if ((user.loginMethod ?? "") === "bot") continue;
+    console.log(`[Presence] Marcando ${user.name} (ID: ${user.id}) como offline (últimaAtividade: ${user.updatedAt})`);
     await cleanupDbWaitingRoomsForUser(user.id);
     await drizzle.update(users).set({ isOnline: false, isPlaying: false }).where(eq(users.id, user.id));
   }
@@ -375,6 +380,9 @@ export const roomsRouter = router({
       if (!position) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "Selecione uma posição para entrar na sala" });
       }
+      
+      console.log(`[JoinRoom] Usuário ${ctx.user.id} (${ctx.user.name}) tentando entrar em ${roomId} posição ${position}`);
+      
       const drizzle = await db.getDb();
       if (!drizzle) {
         const currentMembership = getRoomPlayersLocal(roomId).find((player) => player.userId === ctx.user.id);
@@ -423,7 +431,18 @@ export const roomsRouter = router({
 
       await cleanupDbWaitingRoomsForUser(ctx.user.id, roomId);
 
-      const currentPlayers = await drizzle.select().from(roomPlayers).where(eq(roomPlayers.roomId, roomId));
+      // Buscar apenas jogadores humanos online (não bots, não offline)
+      const allPlayers = await drizzle.select().from(roomPlayers).where(eq(roomPlayers.roomId, roomId));
+      const humanPlayers = [];
+      for (const player of allPlayers) {
+        const user = await drizzle.select().from(users).where(eq(users.id, player.userId)).limit(1);
+        if (user[0] && (user[0].loginMethod ?? "") !== "bot" && user[0].isOnline) {
+          humanPlayers.push(player);
+        }
+      }
+      
+      console.log(`[JoinRoom] Sala ${roomId}: ${humanPlayers.length} humanos, ${allPlayers.length} total`);
+      
       const existing = await drizzle
         .select()
         .from(roomPlayers)
@@ -433,6 +452,7 @@ export const roomsRouter = router({
       if (existing.length > 0) {
         const desiredPosition = position ?? existing[0].seatPosition;
         if (desiredPosition === existing[0].seatPosition) {
+          console.log(`[JoinRoom] Usuário clicou novamente - removendo da posição`);
           await drizzle.delete(roomPlayers).where(eq(roomPlayers.id, existing[0].id));
           const updatedPlayers = await drizzle.select().from(roomPlayers).where(eq(roomPlayers.roomId, roomId));
           const nextCount = updatedPlayers.length;
@@ -454,7 +474,8 @@ export const roomsRouter = router({
           };
         }
         if (desiredPosition !== existing[0].seatPosition) {
-          if (currentPlayers.some((player) => player.userId !== ctx.user.id && player.seatPosition === desiredPosition)) {
+          const positionTaken = humanPlayers.some((p) => p.seatPosition === desiredPosition && p.userId !== ctx.user.id);
+          if (positionTaken) {
             throw new TRPCError({ code: "BAD_REQUEST", message: "Esta posição já está ocupada" });
           }
           await drizzle.update(roomPlayers).set({ seatPosition: desiredPosition }).where(eq(roomPlayers.id, existing[0].id));
@@ -470,20 +491,30 @@ export const roomsRouter = router({
         };
       }
 
-      if (currentPlayers.length >= room.maxPlayers) throw new TRPCError({ code: "BAD_REQUEST", message: "Sala está cheia" });
-      const desiredPosition = position ?? getFirstOpenPosition(currentPlayers, room.maxPlayers);
+      if (humanPlayers.length >= room.maxPlayers) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Sala está cheia" });
+      }
+      
+      const desiredPosition = position ?? getFirstOpenPosition(humanPlayers, room.maxPlayers);
       if (!desiredPosition) throw new TRPCError({ code: "BAD_REQUEST", message: "Sala está cheia" });
-      if (currentPlayers.some((player) => player.seatPosition === desiredPosition)) {
+      
+      const positionTaken = humanPlayers.some((p) => p.seatPosition === desiredPosition);
+      if (positionTaken) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "Esta posição já está ocupada" });
       }
 
       await drizzle.insert(roomPlayers).values({ roomId, userId: ctx.user.id, seatPosition: desiredPosition });
-      const nextCount = currentPlayers.length + 1;
+      const nextCount = humanPlayers.length + 1;
+      const newStatus = nextCount >= room.maxPlayers ? "playing" : room.status;
       await drizzle
         .update(rooms)
-        .set({ currentPlayers: nextCount, status: nextCount >= room.maxPlayers ? "playing" : room.status })
+        .set({ currentPlayers: nextCount, status: newStatus })
         .where(eq(rooms.id, roomId));
+      
+      console.log(`[JoinRoom] Usuário ${ctx.user.id} entrou - nova contagem: ${nextCount}/${room.maxPlayers}`);
+      
       if (nextCount >= room.maxPlayers) {
+        console.log(`[JoinRoom] Sala cheia - iniciando jogo`);
         await gameService.createOrStartRoomGame(roomId, false);
         await ensureDbAutoRoomsAvailable(4);
       }
@@ -492,7 +523,7 @@ export const roomsRouter = router({
         message: nextCount >= room.maxPlayers ? "Partida iniciada" : "Aguardando na sala",
         roomId,
         position: desiredPosition,
-        status: nextCount >= room.maxPlayers ? "playing" : room.status,
+        status: newStatus,
         currentPlayers: nextCount,
         maxPlayers: room.maxPlayers,
       };
