@@ -491,6 +491,32 @@ export default function Lobby() {
         </aside>
 
         <main className="space-y-3">
+          {/* Painel de ações rápidas */}
+          <section className={`rounded-2xl border p-4 shadow-xl backdrop-blur ${theme.shell}`}>
+            <div className="grid gap-3 grid-cols-1 sm:grid-cols-2">
+              <Button
+                className="h-12 bg-sky-600 hover:bg-sky-500 text-white font-bold text-lg"
+                onClick={() => createConfiguredRoom("bot")}
+                disabled={createRoomMutation.isPending || startRoomGameMutation.isPending}
+              >
+                <Bot className="mr-3 h-5 w-5" />
+                {createRoomMutation.isPending || startRoomGameMutation.isPending ? "Preparando mesa..." : "🎮 Jogar com Bot"}
+              </Button>
+              <Button
+                className="h-12 bg-red-600 hover:bg-red-500 text-white font-bold text-lg"
+                onClick={async () => {
+                  setWaitingRoom(null);
+                  setSelectedRooms({});
+                  await logout();
+                  navigate("/");
+                }}
+              >
+                <LogOut className="mr-3 h-5 w-5" />
+                Sair (Logoff)
+              </Button>
+            </div>
+          </section>
+
           <section className={`rounded-2xl border p-3 shadow-xl backdrop-blur ${theme.shell}`}>
             <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
               <h1 className="text-2xl font-black sm:text-3xl">Salas disponíveis</h1>
