@@ -5,7 +5,7 @@ import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, router, protectedProcedure } from "./_core/trpc";
 import { getHeaderValue } from "./_core/requestHeaders";
 import { roomsRouter } from "./roomsRouter";
-import { cleanupWaitingRoomsForUser } from "./roomsRouter";
+import { cleanupStaleOnlineUsers, cleanupWaitingRoomsForUser, replaceActiveRoomsForUserWithBot } from "./roomsRouter";
 import { gamesRouter } from "./gamesRouter";
 import { chatRouter } from "./chatRouter";
 import { rankingRouter } from "./rankingRouter";
@@ -13,7 +13,7 @@ import { adminRouter } from "./adminRouter";
 import { friendsRouter } from "./friendsRouter";
 import { scoreRouter } from "./scoreRouter";
 import { calendarRouter } from "./calendarRouter";
-import { getLocalUserById, loginLocalUser, loginPasswordUser, logoutLocalUser, persistLocalStoreNow, registerCredentialUser, requestEmailCode, verifyEmailCode, updateLocalUserProfile } from "./localStore";
+import { getLocalUserById, loginLocalUser, loginPasswordUser, logoutLocalUser, markLocalUserPresence, persistLocalStoreNow, registerCredentialUser, requestEmailCode, verifyEmailCode, updateLocalUserProfile } from "./localStore";
 import { getDb, updateUserProfile } from "./db";
 import { users } from "../drizzle/schema";
 import { eq } from "drizzle-orm";
@@ -86,12 +86,29 @@ export const appRouter = router({
 
         return { success: true };
       }),
+    heartbeat: protectedProcedure.mutation(async ({ ctx }) => {
+      const localUserIdHeader = getHeaderValue(ctx.req as any, "x-local-user-id");
+      const localUserId = localUserIdHeader ? parseInt(localUserIdHeader, 10) : NaN;
+      if (Number.isFinite(localUserId)) {
+        markLocalUserPresence(localUserId, true);
+        await persistLocalStoreNow();
+        return { success: true } as const;
+      }
+
+      const drizzle = await getDb();
+      if (drizzle && ctx.user?.id) {
+        await cleanupStaleOnlineUsers();
+        await drizzle.update(users).set({ isOnline: true }).where(eq(users.id, ctx.user.id));
+      }
+      return { success: true } as const;
+    }),
     logout: publicProcedure.mutation(async ({ ctx }) => {
       const localUserIdHeader = getHeaderValue(ctx.req as any, "x-local-user-id");
       const localUserId = localUserIdHeader ? parseInt(localUserIdHeader, 10) : NaN;
       if (Number.isFinite(localUserId)) {
         logoutLocalUser(localUserId);
       } else if (ctx.user?.id) {
+        await replaceActiveRoomsForUserWithBot(ctx.user.id);
         await cleanupWaitingRoomsForUser(ctx.user.id);
         const drizzle = await getDb();
         if (drizzle) {

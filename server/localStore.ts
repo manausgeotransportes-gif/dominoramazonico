@@ -405,14 +405,14 @@ function hydratePersistedLocalStore(snapshot: PersistedLocalStore) {
 function closeRestoredBotGames() {
   let changed = false;
 
-  for (const game of games.values()) {
+  for (const game of Array.from(games.values())) {
     const room = rooms.get(game.roomId);
     const hasBot = game.isBotPlayer.some(Boolean) || Boolean(room?.allowBot);
     if (!hasBot || (game.status !== "playing" && game.status !== "waiting")) continue;
 
     game.status = "abandoned";
     game.announcements = [...(game.announcements ?? []), "Partida com bot encerrada após reinício do servidor."];
-    game.playerIds.forEach((userId) => {
+    game.playerIds.forEach((userId: number) => {
       const user = users.get(userId);
       if (user) {
         user.isPlaying = false;
@@ -430,7 +430,7 @@ function closeRestoredBotGames() {
   }
 
   if (changed) {
-    ensureAutoRoomsAvailable(1);
+    ensureAutoRoomsAvailable(4);
   }
   return changed;
 }
@@ -511,7 +511,7 @@ function ensureSeedData() {
   ensureStandardBotsLocal();
 
   if (rooms.size === 0) {
-    ensureAutoRoomsAvailable(1);
+    ensureAutoRoomsAvailable(4);
   }
 }
 
@@ -576,7 +576,7 @@ function countOccupiedSeats(ids: Array<number | null>) {
   return ids.filter((id) => typeof id === "number" && id > 0).length;
 }
 
-function ensureAutoRoomsAvailable(minAvailable = 1) {
+function ensureAutoRoomsAvailable(minAvailable = 4) {
   let changed = false;
   Array.from(rooms.values()).forEach((room) => {
     if (!room.isPrivate && room.isAutoRoom && room.allowBot) {
@@ -600,7 +600,7 @@ export function cleanupExpiredPrivateRoomsLocal(maxAgeHours = 24) {
   const expiresBefore = Date.now() - maxAgeHours * 60 * 60 * 1000;
   let changed = false;
 
-  for (const [roomId, room] of rooms.entries()) {
+  for (const [roomId, room] of Array.from(rooms.entries())) {
     if (!room.isPrivate || room.createdAt.getTime() >= expiresBefore) continue;
 
     const playerIds = compactLegacySeats(normalizeRoomSeats(roomId));
@@ -618,7 +618,7 @@ export function cleanupExpiredPrivateRoomsLocal(maxAgeHours = 24) {
   }
 
   if (changed) {
-    ensureAutoRoomsAvailable(1);
+    ensureAutoRoomsAvailable(4);
     persistLocalStore();
   }
   return changed;
@@ -797,7 +797,7 @@ export function getLocalUserById(userId: number | null | undefined) {
 export function logoutLocalUser(userId: number) {
   const user = users.get(userId);
 
-  for (const [roomId, room] of rooms.entries()) {
+  for (const [roomId, room] of Array.from(rooms.entries())) {
     if (room.status !== "playing") continue;
     const seats = normalizeRoomSeats(roomId);
     if (!seats.includes(userId)) continue;
@@ -839,7 +839,7 @@ export function createRoomLocal(params: { name: string; isPrivate: boolean; allo
     id: nextRoomId++,
     name: params.name,
     isPrivate: params.isPrivate,
-    allowBot: false,
+    allowBot: params.allowBot,
     createdBy: params.createdBy,
     maxPlayers: 4,
     currentPlayers: 1,
@@ -857,7 +857,7 @@ export function createRoomLocal(params: { name: string; isPrivate: boolean; allo
 export function listOpenRoomsLocal(limit = 20) {
   ensureSeedData();
   cleanupExpiredPrivateRoomsLocal();
-  ensureAutoRoomsAvailable(1);
+  ensureAutoRoomsAvailable(4);
   return Array.from(rooms.values())
     .filter((room) => room.status === "waiting" && room.currentPlayers < room.maxPlayers)
     .sort((a, b) => Number(Boolean(b.isAutoRoom)) - Number(Boolean(a.isAutoRoom)) || b.updatedAt.getTime() - a.updatedAt.getTime())
@@ -897,7 +897,7 @@ export function getRoomPlayersLocal(roomId: number) {
 }
 
 export function getWaitingRoomForUserLocal(userId: number) {
-  for (const [roomId, room] of rooms.entries()) {
+  for (const [roomId, room] of Array.from(rooms.entries())) {
     if (room.status !== "waiting") continue;
     const seats = normalizeRoomSeats(roomId);
     const seatIndex = seats.indexOf(userId);
@@ -950,6 +950,23 @@ export function joinRoomLocal(roomId: number, userId: number, requestedPosition?
   if (existingIndex >= 0) {
     const nextIndex = requestedPosition ? requestedPosition - 1 : existingIndex;
     if (nextIndex < 0 || nextIndex >= room.maxPlayers) throw new Error("Posição inválida");
+    if (nextIndex === existingIndex) {
+      current[existingIndex] = null;
+      roomPlayers.set(roomId, current);
+      room.currentPlayers = countOccupiedSeats(current);
+      room.updatedAt = now();
+      const user = users.get(userId);
+      if (user) {
+        user.isPlaying = false;
+        user.updatedAt = now();
+      }
+      if (room.currentPlayers === 0 && room.isPrivate) {
+        room.status = "closed";
+      }
+      ensureAutoRoomsAvailable(4);
+      persistLocalStore();
+      return room;
+    }
     if (nextIndex !== existingIndex) {
       if (current[nextIndex]) throw new Error("Esta posição já está ocupada");
       current[existingIndex] = null;
@@ -979,7 +996,7 @@ export function joinRoomLocal(roomId: number, userId: number, requestedPosition?
       room.status = "playing";
       room.updatedAt = now();
     }
-    ensureAutoRoomsAvailable(1);
+    ensureAutoRoomsAvailable(4);
   }
   persistLocalStore();
   return room;
@@ -988,7 +1005,7 @@ export function joinRoomLocal(roomId: number, userId: number, requestedPosition?
 export function leaveWaitingRoomsForUserLocal(userId: number, exceptRoomId?: number) {
   let changed = false;
 
-  for (const [roomId, room] of rooms.entries()) {
+  for (const [roomId, room] of Array.from(rooms.entries())) {
     if (roomId === exceptRoomId || room.status !== "waiting") continue;
 
     const seats = normalizeRoomSeats(roomId);
@@ -1005,7 +1022,7 @@ export function leaveWaitingRoomsForUserLocal(userId: number, exceptRoomId?: num
   }
 
   if (changed) {
-    ensureAutoRoomsAvailable(1);
+    ensureAutoRoomsAvailable(4);
     persistLocalStore();
   }
 }
@@ -1041,7 +1058,7 @@ export function leaveRoomLocal(roomId: number, userId: number) {
     roomPlayers.set(roomId, replacedPlayers);
     room.currentPlayers = replacedPlayers.length;
     room.updatedAt = now();
-    ensureAutoRoomsAvailable(1);
+    ensureAutoRoomsAvailable(4);
     persistLocalStore();
     return;
   }
@@ -1078,6 +1095,7 @@ export function ensureRoomReadyWithBots(roomId: number) {
   }
   roomPlayers.set(roomId, current);
   room.currentPlayers = countOccupiedSeats(current);
+  room.status = "playing";
   room.updatedAt = now();
   persistLocalStore();
   return getRoomPlayersLocal(roomId);
@@ -1100,7 +1118,7 @@ function orientForRight(domino: Domino, openValue: number | null): Domino {
 }
 
 export function createGameLocal(roomId: number, options?: { playerIds?: number[]; status?: LocalGameState["status"] }) {
-  ensureAutoRoomsAvailable(1);
+  ensureAutoRoomsAvailable(4);
   const room = rooms.get(roomId);
   if (!room) throw new Error("Sala não encontrada");
 
@@ -1128,7 +1146,7 @@ export function createGameLocal(roomId: number, options?: { playerIds?: number[]
     status: options?.status ?? "waiting",
     currentPlayerIndex,
     roundNumber: 1,
-    boardState: createEmptyBoardState(),
+    boardState: { ...createEmptyBoardState(), turnStartedAt: Date.now() } as BoardState,
     playerHands: dealt,
     playerScores: new Array(playerIds.length).fill(0),
     playerIds,
@@ -1147,7 +1165,7 @@ export function createGameLocal(roomId: number, options?: { playerIds?: number[]
 
   room.status = options?.status === "abandoned" ? "finished" : (options?.status ?? "playing");
   room.updatedAt = now();
-  ensureAutoRoomsAvailable(1);
+  ensureAutoRoomsAvailable(4);
   playerIds.forEach((id) => {
     const user = users.get(id);
     if (user) user.isPlaying = true;
@@ -1175,13 +1193,41 @@ export function setGameLocal(game: LocalGameState) {
   return game;
 }
 
+export function markLocalUserPresence(userId: number, isOnline = true) {
+  const user = users.get(userId);
+  if (!user || (user.loginMethod ?? "") === "bot") return null;
+  user.isOnline = isOnline;
+  user.updatedAt = now();
+  if (!isOnline) {
+    user.isPlaying = false;
+    leaveWaitingRoomsForUserLocal(userId);
+  }
+  persistLocalStore();
+  return user;
+}
+
+export function cleanupStaleLocalUsers(maxAgeMs = 20_000) {
+  const cutoff = Date.now() - maxAgeMs;
+  let changed = false;
+  for (const user of Array.from(users.values())) {
+    if ((user.loginMethod ?? "") === "bot" || !user.isOnline) continue;
+    if (user.updatedAt.getTime() >= cutoff) continue;
+    user.isOnline = false;
+    user.isPlaying = false;
+    user.updatedAt = now();
+    leaveWaitingRoomsForUserLocal(user.id);
+    changed = true;
+  }
+  if (changed) persistLocalStore();
+}
+
 export function closeInactiveGamesLocal() {
   ensureSeedData();
   const currentTime = Date.now();
   const closed: LocalGameState[] = [];
   const warned: LocalGameState[] = [];
 
-  for (const game of games.values()) {
+  for (const game of Array.from(games.values())) {
     if (game.status !== "playing") continue;
     const room = rooms.get(game.roomId);
     const lastActivity = room?.updatedAt?.getTime() ?? currentTime;
@@ -1190,7 +1236,7 @@ export function closeInactiveGamesLocal() {
     if (inactiveMs >= 60_000) {
       game.status = "abandoned";
       game.announcements = [...(game.announcements ?? []), "Partida encerrada automaticamente por 1 minuto sem movimentação."];
-      game.playerIds.forEach((userId) => {
+      game.playerIds.forEach((userId: number) => {
         const user = users.get(userId);
         if (user) user.isPlaying = false;
       });
@@ -1202,14 +1248,14 @@ export function closeInactiveGamesLocal() {
       continue;
     }
 
-    if (inactiveMs >= 45_000 && !game.announcements.some((item) => item.includes("sem movimentação"))) {
+    if (inactiveMs >= 45_000 && !game.announcements.some((item: string) => item.includes("sem movimentação"))) {
       game.announcements = [...(game.announcements ?? []), "Aviso: esta partida será fechada se ficar 1 minuto sem movimentação."];
       warned.push(game);
     }
   }
 
   if (closed.length || warned.length) {
-    ensureAutoRoomsAvailable(1);
+    ensureAutoRoomsAvailable(4);
     persistLocalStore();
   }
   return { closedCount: closed.length, warnedCount: warned.length };
@@ -1526,7 +1572,7 @@ export function recordFinishedGame(game: LocalGameState) {
 
   const room = rooms.get(game.roomId);
   if (room) room.status = "finished";
-  ensureAutoRoomsAvailable(1);
+  ensureAutoRoomsAvailable(4);
   persistLocalStore();
 }
 
@@ -1562,7 +1608,7 @@ export function recordRoomMatchResultLocal(roomId: number, winnerPlayerIndex: nu
     room.status = "finished";
     room.updatedAt = now();
   }
-  ensureAutoRoomsAvailable(1);
+  ensureAutoRoomsAvailable(4);
   persistLocalStore();
 }
 

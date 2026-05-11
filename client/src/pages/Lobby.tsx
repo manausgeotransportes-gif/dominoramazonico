@@ -10,8 +10,10 @@ import {
   Calendar,
   Check,
   Crown,
+  Bot,
   Globe2,
   Lock,
+  LogOut,
   Moon,
   Palette,
   Plus,
@@ -81,7 +83,7 @@ function cleanRoomName(name: string) {
 }
 
 export default function Lobby() {
-  const { user, isAuthenticated } = useAuth({ redirectOnUnauthenticated: true, redirectPath: "/" });
+  const { user, isAuthenticated, logout } = useAuth({ redirectOnUnauthenticated: true, redirectPath: "/" });
   const utils = trpc.useUtils();
   const [, navigate] = useLocation();
   const pendingCreateModeRef = useRef<"private" | "bot">("private");
@@ -104,20 +106,29 @@ export default function Lobby() {
   const playerAvatar = resolvePlayerAvatar(playerProfile);
   const rankingQuery = trpc.ranking.getPlayerRanking.useQuery(undefined, { enabled: isAuthenticated });
   const topPlayersQuery = trpc.ranking.getTopPlayers.useQuery(undefined, { enabled: isAuthenticated });
-  const publicRoomsQuery = trpc.rooms.listOpenRooms.useQuery({ limit: 1, onlyPublic: true }, { refetchInterval: 3000 });
-  const privateRoomsQuery = trpc.rooms.searchPrivateRooms.useQuery(searchQuery, { enabled: roomFilter === "private" });
+  const publicRoomsQuery = trpc.rooms.listOpenRooms.useQuery({ limit: 4, onlyPublic: true }, { refetchInterval: 1000 });
+  const privateRoomsQuery = trpc.rooms.searchPrivateRooms.useQuery(searchQuery, { enabled: roomFilter === "private", refetchInterval: 1000 });
   const myWaitingRoomQuery = trpc.rooms.getMyWaitingRoom.useQuery(undefined, {
     enabled: isAuthenticated,
-    refetchInterval: 3000,
+    refetchInterval: 1000,
     retry: false,
   });
   const waitingRoomQuery = trpc.rooms.getRoomById.useQuery(waitingRoom?.roomId ?? 0, {
     enabled: Boolean(waitingRoom?.roomId),
-    refetchInterval: 2000,
+    refetchInterval: 1000,
     retry: false,
   });
-  const friendsQuery = trpc.friends.listFriends.useQuery(undefined, { enabled: isAuthenticated, refetchInterval: 5000 });
-  const availableUsersQuery = trpc.friends.listAvailableUsers.useQuery(undefined, { enabled: isAuthenticated, refetchInterval: 5000 });
+  const friendsQuery = trpc.friends.listFriends.useQuery(undefined, { enabled: isAuthenticated, refetchInterval: 3000 });
+  const availableUsersQuery = trpc.friends.listAvailableUsers.useQuery(undefined, { enabled: isAuthenticated, refetchInterval: 1000 });
+  const heartbeatMutation = trpc.auth.heartbeat.useMutation();
+  const startRoomGameMutation = trpc.games.startRoomGame.useMutation({
+    onSuccess: (gameState) => {
+      toast.success("Partida com bot iniciada.");
+      refreshRoomData(gameState.roomId);
+      navigate(`/game/${gameState.roomId}`);
+    },
+    onError: (error) => toast.error(error.message || "Não foi possível iniciar com bots"),
+  });
 
   const sendInviteMutation = trpc.friends.sendInvite.useMutation({
     onSuccess: () => toast.success("Convite enviado ao amigo."),
@@ -127,6 +138,13 @@ export default function Lobby() {
   const createRoomMutation = trpc.rooms.createRoom.useMutation({
     onSuccess: (data) => {
       if (selectedFriendId) sendInviteMutation.mutate({ toUserId: selectedFriendId, gameId: data.roomId });
+      if (pendingCreateModeRef.current === "bot") {
+        toast.success("Preparando mesa com bots.");
+        startRoomGameMutation.mutate({ roomId: data.roomId, fillBots: true });
+        setRoomName("");
+        setSelectedFriendId(null);
+        return;
+      }
       toast.success("Sala privada criada. Aguardando na sala.");
       setWaitingRoom({ roomId: data.roomId, position: 1 });
       setSelectedRooms({});
@@ -215,6 +233,27 @@ export default function Lobby() {
   }, [user]);
 
   useEffect(() => {
+    if (!isAuthenticated) return;
+    heartbeatMutation.mutate();
+    const timer = window.setInterval(() => heartbeatMutation.mutate(), 10_000);
+    const logoutOnExit = () => {
+      logout().catch(() => undefined);
+    };
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") heartbeatMutation.mutate();
+    };
+    window.addEventListener("pagehide", logoutOnExit);
+    window.addEventListener("beforeunload", logoutOnExit);
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("pagehide", logoutOnExit);
+      window.removeEventListener("beforeunload", logoutOnExit);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, [isAuthenticated]);
+
+  useEffect(() => {
     setSelectedRooms((current) => {
       const next = Object.fromEntries(
         Object.entries(current).filter(([roomId]) => rooms.some((room: any) => room.id === Number(roomId)))
@@ -249,9 +288,9 @@ export default function Lobby() {
   const createConfiguredRoom = (mode: "private" | "bot") => {
     pendingCreateModeRef.current = mode;
     createRoomMutation.mutate({
-      name: roomName || `Sala privada de ${user?.name || "Jogador"}`,
+      name: roomName || (mode === "bot" ? `Mesa com bot de ${user?.name || "Jogador"}` : `Sala privada de ${user?.name || "Jogador"}`),
       isPrivate: true,
-      allowBot: false,
+      allowBot: mode === "bot",
     });
   };
 
@@ -315,6 +354,28 @@ export default function Lobby() {
                     Ranking
                   </Button>
                 </Link>
+                <Button
+                  className={`h-10 ${appearance === "light" ? "border-sky-900/15 bg-sky-50 text-sky-950 hover:bg-sky-100" : "border-sky-300/20 bg-sky-500/10 text-sky-50 hover:bg-sky-500/20"}`}
+                  variant="outline"
+                  onClick={() => createConfiguredRoom("bot")}
+                  disabled={createRoomMutation.isPending || startRoomGameMutation.isPending}
+                >
+                  <Bot className="mr-2 h-4 w-4" />
+                  Jogar com bot
+                </Button>
+                <Button
+                  variant="outline"
+                  className={`h-10 ${appearance === "light" ? "border-red-900/15 bg-red-50 text-red-950 hover:bg-red-100" : "border-red-300/20 bg-red-500/10 text-red-50 hover:bg-red-500/20"}`}
+                  onClick={async () => {
+                    await logout();
+                    setWaitingRoom(null);
+                    setSelectedRooms({});
+                    navigate("/");
+                  }}
+                >
+                  <LogOut className="mr-2 h-4 w-4" />
+                  Logoff
+                </Button>
               </div>
             </CardContent>
           </Card>
@@ -508,12 +569,10 @@ export default function Lobby() {
                         currentUserId={user?.id ?? null}
                         isJoining={joiningRoomId === room.id && joinRoomMutation.isPending}
                         onSelectPosition={(position) => {
-                          // Se já está aguardando nesta sala, permitir deselecionar
-                          if (waitingPosition === position && selectedPosition === position) {
-                            setSelectedRooms({});
-                          } else {
-                            setSelectedRooms({ [room.id]: position });
-                          }
+                          if (joinRoomMutation.isPending) return;
+                          setSelectedRooms({ [room.id]: position });
+                          setJoiningRoomId(room.id);
+                          joinRoomMutation.mutate({ roomId: room.id, position });
                         }}
                         onJoin={() => {
                           const isCurrentWaitingRoom = waitingRoom?.roomId === room.id;
@@ -629,7 +688,7 @@ function RoomPanel({
   onJoin: () => void;
 }) {
   const roomPlayersQuery = trpc.rooms.getRoomPlayers.useQuery(room.id, {
-    refetchInterval: 3000,
+    refetchInterval: 1000,
   });
   const waitingPlayers = roomPlayersQuery.data ?? [];
   const slots = Array.from({ length: room.maxPlayers ?? 4 }, (_, index) => {
@@ -669,9 +728,6 @@ function RoomPanel({
               const waiting = waitingPosition === position;
               const pairLabel = position === 1 || position === 3 ? "Dupla 1" : "Dupla 2";
               const label = filled ? (player?.name ?? `Jogador ${position}`) : `Posição ${position} - ${pairLabel}`;
-              // Se já está aguardando em outra posição, desabilitar outras posições
-              const isDisabledByWaiting = isWaitingHere && !waiting;
-
               return (
               <button
                 key={index}
@@ -679,7 +735,7 @@ function RoomPanel({
                 aria-label={label}
                 aria-pressed={selected}
                 title={label}
-                disabled={isJoining || isDisabledByWaiting || (isFull && !filledByCurrentUser) || (filled && !filledByCurrentUser)}
+                disabled={isJoining || (isFull && !filledByCurrentUser) || (filled && !filledByCurrentUser)}
                 onClick={() => {
                   onSelectPosition(position);
                 }}
@@ -697,7 +753,7 @@ function RoomPanel({
               >
                 {filled ? <Users className="h-3.5 w-3.5 text-emerald-100" /> : position}
                 <div className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-2 hidden min-w-28 -translate-x-1/2 whitespace-nowrap rounded-lg border border-emerald-300/20 bg-slate-950 px-2 py-1 text-xs font-semibold text-white shadow-xl group-hover:block group-focus:block">
-                  {isDisabledByWaiting ? "Saia de sua posição antes" : label}
+                  {filledByCurrentUser ? "Sua posição. Clique para sair." : selected ? "Posição selecionada" : filled ? "Posição ocupada" : label}
                 </div>
               </button>
               );

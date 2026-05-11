@@ -22,7 +22,7 @@ import {
 } from "./gameEngine";
 
 import type { LocalGameState } from "./localStore";
-import { getRoomByIdLocal, createRoomLocal, joinRoomLocal, getLocalUserById, createGameLocal, setGameLocal, recomputeTeamScores, getTeamIndex, ensureRoomReadyWithBots, getGameByRoomLocal, recordFinishedGame, getGameByIdLocal, appendMessage, recordRoomMatchResultLocal } from "./localStore";
+import { getRoomByIdLocal, createRoomLocal, joinRoomLocal, leaveRoomLocal, getLocalUserById, createGameLocal, setGameLocal, recomputeTeamScores, getTeamIndex, ensureRoomReadyWithBots, getGameByRoomLocal, recordFinishedGame, getGameByIdLocal, appendMessage, recordRoomMatchResultLocal } from "./localStore";
 
 const roomGameStartLocks = new Map<number, Promise<GameState | LocalGameState | null>>();
 
@@ -381,6 +381,74 @@ async function maybeRunBotTurns(gameState: LocalGameState): Promise<LocalGameSta
   return current;
 }
 
+function withFreshTurnTimer<T extends GameState | LocalGameState>(gameState: T): T {
+  return {
+    ...gameState,
+    boardState: { ...(gameState.boardState as any), turnStartedAt: Date.now(), turnWarningAt: null },
+  };
+}
+
+export async function replaceTimedOutPlayerWithBot(gameState: GameState | LocalGameState, nowMs = Date.now()) {
+  if (gameState.status !== "playing") return gameState;
+  if (gameState.isBotPlayer[gameState.currentPlayerIndex]) return gameState;
+
+  const boardState = gameState.boardState as BoardState & { turnStartedAt?: number; turnWarningAt?: number | null };
+  if (!boardState.turnStartedAt) {
+    const initialized = withFreshTurnTimer(gameState);
+    if (isLocalGameState(initialized)) setGameLocal(initialized);
+    return initialized;
+  }
+
+  const elapsed = nowMs - boardState.turnStartedAt;
+  const playerIndex = gameState.currentPlayerIndex;
+  if (elapsed < 60_000) {
+    if (elapsed >= 45_000 && !boardState.turnWarningAt && isLocalGameState(gameState)) {
+      const warned: LocalGameState = {
+        ...gameState,
+        boardState: { ...boardState, turnWarningAt: nowMs } as BoardState,
+        announcements: [
+          ...(gameState.announcements ?? []),
+          `${gameState.playerNames[playerIndex]} precisa jogar agora ou será substituído por bot em 1 minuto de inatividade.`,
+        ],
+      };
+      setGameLocal(warned);
+      return warned;
+    }
+    return gameState;
+  }
+
+  if (isLocalGameState(gameState)) {
+    leaveRoomLocal(gameState.roomId, gameState.playerIds[playerIndex]);
+    const replaced = getGameByRoomLocal(gameState.roomId) ?? gameState;
+    const updated: LocalGameState = {
+      ...(replaced as LocalGameState),
+      boardState: { ...(replaced.boardState as any), turnStartedAt: nowMs, turnWarningAt: null },
+      announcements: [
+        ...((replaced as LocalGameState).announcements ?? []),
+        `${gameState.playerNames[playerIndex]} foi substituído por bot por inatividade de 1 minuto.`,
+      ],
+    };
+    setGameLocal(updated);
+    return maybeRunBotTurns(updated);
+  }
+
+  const db = await getDb();
+  if (db) {
+    const players = await db.select().from(gamePlayers).where(eq(gamePlayers.gameId, gameState.gameId)).orderBy(gamePlayers.playerIndex);
+    const current = players.find((player) => player.playerIndex === playerIndex);
+    if (!current) return gameState;
+    const bot = await ensureDbBotUser(playerIndex);
+    await db.update(gamePlayers).set({ userId: bot.id, isBot: true }).where(eq(gamePlayers.id, current.id));
+    await db.update(roomPlayers).set({ userId: bot.id }).where(and(eq(roomPlayers.roomId, gameState.roomId), eq(roomPlayers.seatPosition, playerIndex + 1)));
+    await db.update(users).set({ isPlaying: false }).where(eq(users.id, current.userId));
+    await db.update(games).set({ boardState: { ...boardState, turnStartedAt: nowMs, turnWarningAt: null } }).where(eq(games.id, gameState.gameId));
+    const refreshed = await getGameState(gameState.gameId);
+    return refreshed ?? gameState;
+  }
+
+  return gameState;
+}
+
 export async function createGame(roomId: number, playerIds: number[], isBotPlayer: boolean[] = []): Promise<GameState | null> {
   const db = await getDb();
 
@@ -401,7 +469,7 @@ export async function createGame(roomId: number, playerIds: number[], isBotPlaye
     }
 
     const hands = distributeHands(4);
-    const boardState: BoardState = createEmptyBoardState();
+    const boardState: BoardState = { ...createEmptyBoardState(), turnStartedAt: Date.now(), turnWarningAt: null } as BoardState;
     const startPlayerIndex = getStartPlayerIndexBySena(hands);
     const playerNames = playerIds.map((id) => getLocalUserById(id)?.name ?? `Jogador ${id}`);
     const gameId = createGameLocal(room.id, { playerIds, status: "waiting" }).gameId;
@@ -435,7 +503,7 @@ export async function createGame(roomId: number, playerIds: number[], isBotPlaye
   }
 
   const hands = distributeHands(4);
-  const boardState: BoardState = createEmptyBoardState();
+  const boardState: BoardState = { ...createEmptyBoardState(), turnStartedAt: Date.now(), turnWarningAt: null } as BoardState;
   const startPlayerIndex = getStartPlayerIndexBySena(hands);
 
   const existingBeforeInsert = await db.select().from(games).where(eq(games.roomId, roomId)).orderBy(desc(games.id)).limit(1);
@@ -507,11 +575,11 @@ async function createOrStartRoomGameLocked(roomId: number, fillBots = false) {
   if (db) {
     const existingGame = await db.select().from(games).where(eq(games.roomId, roomId)).orderBy(desc(games.id)).limit(1);
     if (existingGame[0]) return getGameState(existingGame[0].id);
-    if (fillBots) return null;
 
     const room = await db.select().from(gameRooms).where(eq(gameRooms.id, roomId)).limit(1);
     const currentRoom = room[0];
     if (!currentRoom) return null;
+    if (fillBots && !currentRoom.isPrivate) return null;
     if (fillBots && !currentRoom.allowBot) return null;
     if (!fillBots && currentRoom.currentPlayers < currentRoom.maxPlayers) return null;
 
@@ -532,13 +600,13 @@ async function createOrStartRoomGameLocked(roomId: number, fillBots = false) {
 
   const room = getRoomByIdLocal(roomId);
   if (!room) return null;
-  if (fillBots) return null;
+  if (fillBots && !room.isPrivate) return null;
   if (fillBots && !room.allowBot) return null;
   if (fillBots) ensureRoomReadyWithBots(roomId);
   if (!room.allowBot && room.currentPlayers < room.maxPlayers) return null;
   const existing = getGameByRoomLocal(roomId);
   if (existing) return maybeRunBotTurns(existing);
-  const created = createGameLocal(roomId);
+  const created = createGameLocal(roomId, { status: "playing" });
   return maybeRunBotTurns(created);
 }
 
@@ -546,7 +614,9 @@ export async function getRoomGameState(roomId: number) {
   const db = await getDb();
   if (!db) {
     const localGame = getGameByRoomLocal(roomId);
-    return localGame ? maybeRunBotTurns(localGame) : null;
+    if (!localGame) return null;
+    const checked = await replaceTimedOutPlayerWithBot(localGame);
+    return maybeRunBotTurns(checked as LocalGameState);
   }
 
   const existingGame = await db.select().from(games).where(eq(games.roomId, roomId)).orderBy(desc(games.id)).limit(1);
@@ -606,15 +676,15 @@ export async function finishRoomMatch(roomId: number, winnerPlayerIndex: number)
 export async function startGame(gameState: GameState): Promise<GameState> {
   const db = await getDb();
   if (!db && isLocalGameState(gameState)) {
-    const updated = { ...gameState, status: "playing" as const };
+    const updated = withFreshTurnTimer({ ...gameState, status: "playing" as const });
     setGameLocal(updated);
     return maybeRunBotTurns(updated);
   }
 
   const startPlayerIndex = getStartPlayerIndexBySena(gameState.playerHands);
-  const updatedState: GameState = { ...gameState, status: "playing", currentPlayerIndex: startPlayerIndex };
+  const updatedState: GameState = withFreshTurnTimer({ ...gameState, status: "playing", currentPlayerIndex: startPlayerIndex });
   if (db) {
-    await db.update(games).set({ status: "playing", currentPlayerIndex: startPlayerIndex }).where(eq(games.id, gameState.gameId));
+    await db.update(games).set({ status: "playing", currentPlayerIndex: startPlayerIndex, boardState: updatedState.boardState }).where(eq(games.id, gameState.gameId));
   }
   return updatedState;
 }
@@ -714,7 +784,7 @@ export async function playMove(
 
   const updatedState: GameState = {
     ...gameState,
-    boardState: newBoardState,
+    boardState: { ...newBoardState, turnStartedAt: Date.now(), turnWarningAt: null } as BoardState,
     playerHands: newPlayerHands,
     playerScores: newScores,
     currentPlayerIndex: nextPlayerIndex,
@@ -871,6 +941,7 @@ export async function passMove(
   const updatedState: LocalGameState = {
     ...(gameState as LocalGameState),
     currentPlayerIndex: nextPlayerIndex,
+    boardState: { ...(gameState.boardState as any), turnStartedAt: Date.now(), turnWarningAt: null },
     pendingGaloPlayerId: null, // Reseta GALO se o jogador passar
   };
 
@@ -952,13 +1023,14 @@ export async function passMove(
   const updatedDbState: GameState = {
     ...gameState,
     currentPlayerIndex: nextPlayerIndex,
+    boardState: { ...(gameState.boardState as any), turnStartedAt: Date.now(), turnWarningAt: null } as BoardState,
     passCount: nextPassCount,
     playerScores: nextScores,
   };
 
   const db = await getDb();
   if (db) {
-    const boardStateWithPassCount = { ...gameState.boardState, passCount: nextPassCount };
+      const boardStateWithPassCount = { ...gameState.boardState, passCount: nextPassCount, turnStartedAt: Date.now(), turnWarningAt: null };
     await db.update(games).set({ currentPlayerIndex: nextPlayerIndex, boardState: boardStateWithPassCount }).where(eq(games.id, gameState.gameId));
     if (!isOpeningPass && nextPassCount === 1) {
       const oppositeTeam = 1 - getTeamIndex(playerIndex, gameState.playerIds.length);
@@ -985,7 +1057,9 @@ export async function getGameState(gameId: number): Promise<GameState | null> {
   const db = await getDb();
   if (!db) {
     const localGame = getGameByIdLocal(gameId);
-    return localGame ? maybeRunBotTurns(localGame) : null;
+    if (!localGame) return null;
+    const checked = await replaceTimedOutPlayerWithBot(localGame);
+    return maybeRunBotTurns(checked as LocalGameState);
   }
 
   const gameList = await db.select().from(games).where(eq(games.id, gameId)).limit(1);
@@ -1012,7 +1086,7 @@ export async function getGameState(gameId: number): Promise<GameState | null> {
     return scores;
   }, [0, 0]);
 
-  return {
+  const state: GameState = {
     gameId,
     roomId: game.roomId,
     status: game.status as any,
@@ -1032,6 +1106,7 @@ export async function getGameState(gameId: number): Promise<GameState | null> {
     lastMove: null,
     pendingGaloPlayerId: null,
   };
+  return replaceTimedOutPlayerWithBot(state) as Promise<GameState>;
 }
 
 /**

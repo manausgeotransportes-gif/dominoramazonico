@@ -195,6 +195,34 @@ describe("roomsRouter", () => {
     expect(players[0].seatPosition).toBe(3);
   });
 
+  it("desmarca a posição ao clicar novamente na própria posição", async () => {
+    const baseId = 90_000 + Math.floor(Math.random() * 10_000);
+    addRoomTestUser(baseId, "toggle-owner");
+
+    const caller = appRouter.createCaller(createAuthContext(baseId).ctx);
+    const room = await caller.rooms.createRoom({ name: `Sala toggle ${baseId}`, isPrivate: true, allowBot: false });
+
+    const result = await caller.rooms.joinRoom({ roomId: room.roomId, position: 1 });
+
+    expect((result as any).action).toBe("left");
+    expect(getRoomPlayersLocal(room.roomId).some((item) => item.userId === baseId)).toBe(false);
+  });
+
+  it("mostra para outros jogadores a posição ocupada quase em tempo real", async () => {
+    const baseId = 95_000 + Math.floor(Math.random() * 10_000);
+    addRoomTestUser(baseId, "visibility-owner");
+    addRoomTestUser(baseId + 1, "visibility-player");
+
+    const owner = appRouter.createCaller(createAuthContext(baseId).ctx);
+    const player = appRouter.createCaller(createAuthContext(baseId + 1).ctx);
+    const room = await owner.rooms.createRoom({ name: `Sala visão ${baseId}`, isPrivate: true, allowBot: false });
+
+    await player.rooms.joinRoom({ roomId: room.roomId, position: 2 });
+    const players = await owner.rooms.getRoomPlayers(room.roomId);
+
+    expect(players.some((item: any) => item.userId === baseId + 1 && item.seatPosition === 2)).toBe(true);
+  });
+
   it("move o jogador para outra sala e libera a sala anterior automaticamente", async () => {
     const baseId = 100_000 + Math.floor(Math.random() * 10_000);
     addRoomTestUser(baseId, "switch-owner");
@@ -232,6 +260,19 @@ describe("roomsRouter", () => {
     expect(getGameByRoomLocal(room.roomId)).not.toBeNull();
   });
 
+  it("cria e inicia sala privada com bots", async () => {
+    const baseId = 130_000 + Math.floor(Math.random() * 10_000);
+    addRoomTestUser(baseId, "bot-room-owner");
+
+    const caller = appRouter.createCaller(createAuthContext(baseId).ctx);
+    const room = await caller.rooms.createRoom({ name: `Sala bot ${baseId}`, isPrivate: true, allowBot: true });
+    const game = await caller.games.startRoomGame({ roomId: room.roomId, fillBots: true });
+
+    expect(game.roomId).toBe(room.roomId);
+    expect(game.isBotPlayer.filter(Boolean).length).toBeGreaterThanOrEqual(3);
+    expect(getRoomByIdLocal(room.roomId)?.status).toBe("playing");
+  });
+
   describe("listOpenRooms", () => {
     it("deve retornar uma lista de salas abertas", async () => {
       const { ctx } = createAuthContext();
@@ -241,6 +282,8 @@ describe("roomsRouter", () => {
       // mas não deve lançar erro
       const result = await caller.rooms.listOpenRooms({ limit: 20, onlyPublic: true });
       expect(Array.isArray(result)).toBe(true);
+      expect(result.length).toBeGreaterThanOrEqual(4);
+      expect(result.filter((room: any) => !room.isPrivate && room.status === "waiting")).toHaveLength(4);
     });
 
     it("deve filtrar salas privadas quando solicitado", async () => {

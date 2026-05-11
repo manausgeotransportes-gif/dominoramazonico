@@ -11,9 +11,11 @@ import {
   respondFriendInviteLocal,
   sendFriendInviteLocal,
 } from "./localStore";
+import { cleanupStaleOnlineUsers } from "./roomsRouter";
 
 export const friendsRouter = router({
   listAvailableUsers: protectedProcedure.query(async ({ ctx }) => {
+    await cleanupStaleOnlineUsers();
     const db = await getDb();
     if (!db) return listAvailableUsersLocal(ctx.user.id);
 

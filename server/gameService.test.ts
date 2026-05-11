@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { addLocalUserForTest, createRoomLocal, getGameByRoomLocal, joinRoomLocal } from "./localStore";
+import { addLocalUserForTest, createRoomLocal, getGameByRoomLocal, joinRoomLocal, leaveRoomLocal } from "./localStore";
 import * as gameService from "./gameService";
 import * as gameEngine from "./gameEngine";
 import { type Domino } from "./gameEngine";
@@ -221,6 +221,81 @@ describe("gameService", () => {
       const result = await gameService.createOrStartRoomGame(room.id, true);
 
       expect(result).toBeNull();
+    });
+
+    it("substitui por bot quando jogador abandona partida em andamento", async () => {
+      const baseId = 900_000 + Math.floor(Math.random() * 10_000);
+      for (let index = 0; index < 4; index += 1) {
+        addLocalUserForTest({
+          id: baseId + index,
+          openId: `leave-bot-${baseId}-${index}`,
+          name: `Jogador saída ${index + 1}`,
+          email: null,
+          loginMethod: "test",
+          passwordHash: null,
+          role: "user",
+          isOnline: true,
+          isPlaying: false,
+          blockedUntil: null,
+          blockReason: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          lastSignedIn: new Date(),
+        });
+      }
+
+      const room = createRoomLocal({ name: `Sala abandono ${baseId}`, isPrivate: true, allowBot: false, createdBy: baseId });
+      joinRoomLocal(room.id, baseId + 1, 2);
+      joinRoomLocal(room.id, baseId + 2, 3);
+      joinRoomLocal(room.id, baseId + 3, 4);
+      const game = await gameService.createOrStartRoomGame(room.id, false);
+      expect(game).not.toBeNull();
+
+      leaveRoomLocal(room.id, baseId + 1);
+      const updated = getGameByRoomLocal(room.id);
+
+      expect(updated?.playerIds[1]).not.toBe(baseId + 1);
+      expect(updated?.isBotPlayer[1]).toBe(true);
+    });
+
+    it("substitui por bot após 1 minuto sem jogar", async () => {
+      const baseId = 920_000 + Math.floor(Math.random() * 10_000);
+      for (let index = 0; index < 4; index += 1) {
+        addLocalUserForTest({
+          id: baseId + index,
+          openId: `timeout-bot-${baseId}-${index}`,
+          name: `Jogador timeout ${index + 1}`,
+          email: null,
+          loginMethod: "test",
+          passwordHash: null,
+          role: "user",
+          isOnline: true,
+          isPlaying: false,
+          blockedUntil: null,
+          blockReason: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          lastSignedIn: new Date(),
+        });
+      }
+
+      const room = createRoomLocal({ name: `Sala timeout ${baseId}`, isPrivate: true, allowBot: false, createdBy: baseId });
+      joinRoomLocal(room.id, baseId + 1, 2);
+      joinRoomLocal(room.id, baseId + 2, 3);
+      joinRoomLocal(room.id, baseId + 3, 4);
+      const game = await gameService.createOrStartRoomGame(room.id, false);
+      expect(game).not.toBeNull();
+      if (!game) return;
+
+      const staleGame = {
+        ...(game as any),
+        currentPlayerIndex: 0,
+        boardState: { ...(game.boardState as any), turnStartedAt: Date.now() - 61_000 },
+      };
+      const updated = await gameService.replaceTimedOutPlayerWithBot(staleGame);
+
+      expect(updated.isBotPlayer[0]).toBe(true);
+      expect(updated.playerIds[0]).not.toBe(baseId);
     });
   });
 
