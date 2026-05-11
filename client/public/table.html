@@ -1,0 +1,83 @@
+'<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mesa de Dominó</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      background: #0f172a;
+      color: white;
+      font-family: Arial, sans-serif;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+    #game-container {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #status {
+      text-align: center;
+      padding: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div id="game-container">
+    <div id="status">Carregando jogo...</div>
+  </div>
+
+  <script>
+    let gameState = null;
+    let players = [];
+    let playerProfile = null;
+
+    window.addEventListener('message', (event) => {
+      if (event.origin !== window.location.origin) return;
+
+      const data = event.data;
+      console.log('Received message:', data);
+
+      switch (data.type) {
+        case 'players':
+          players = data.players || [];
+          updateDisplay();
+          break;
+        case 'player-profile':
+          playerProfile = data.profile;
+          updateDisplay();
+          break;
+        case 'set-announcement':
+          // Handle announcement
+          break;
+        case 'score-action':
+          // Handle score action
+          break;
+        default:
+          console.log('Unknown message type:', data.type);
+      }
+    });
+
+    function updateDisplay() {
+      const status = document.getElementById('status');
+      if (players.length > 0) {
+        status.innerHTML = `
+          <h2>Jogo Iniciado!</h2>
+          <p>Jogadores: ${players.map(p => p.name).join(', ')}</p>
+          <p>Perfil: ${playerProfile?.displayName || 'Anônimo'}</p>
+        `;
+      } else {
+        status.innerHTML = 'Aguardando jogadores...';
+      }
+    }
+
+    // Notify parent that iframe is ready
+    window.parent.postMessage({ type: 'iframe-ready' }, '*');
+  </script>
+</body>
+</html>

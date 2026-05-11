@@ -197,6 +197,7 @@ const STANDARD_BOTS = [
   { name: "Bot Norte", email: "bot-norte@domino.local" },
   { name: "Bot Centro", email: "bot-centro@domino.local" },
   { name: "Bot Sul", email: "bot-sul@domino.local" },
+  { name: "Bot Oeste", email: "bot-oeste@domino.local" },
 ];
 let autoRoomCursor = 0;
 

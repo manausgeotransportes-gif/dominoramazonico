@@ -19,9 +19,10 @@ export default function GamePage() {
   const routeRoomId = params?.roomId ?? pathname.match(/^\/game\/([^/?#]+)\/?$/)?.[1] ?? location.match(/^\/game\/([^/?#]+)\/?$/)?.[1];
   const roomId = routeRoomId ? parseInt(routeRoomId, 10) : NaN;
   const canUseRoomId = (match || pathname.startsWith("/game/") || location.startsWith("/game/")) && Number.isFinite(roomId);
-  const { isAuthenticated, user } = useAuth({ redirectOnUnauthenticated: true, redirectPath: "/" });
+  const { isAuthenticated, user, logout } = useAuth({ redirectOnUnauthenticated: true, redirectPath: "/" });
   const utils = trpc.useUtils();
 
+  const heartbeatMutation = trpc.auth.heartbeat.useMutation();
   const leaveRoomMutation = trpc.rooms.leaveRoom.useMutation();
   const playMoveMutation = trpc.games.playMove.useMutation();
   const passMoveMutation = trpc.games.passMove.useMutation();
@@ -134,6 +135,47 @@ export default function GamePage() {
   useEffect(() => {
     syncIframe();
   }, [syncIframe]);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    heartbeatMutation.mutate();
+    const timer = window.setInterval(() => heartbeatMutation.mutate(), 10_000);
+    const sendPresenceLogout = () => {
+      const localUserId = window.localStorage.getItem("domino_local_user_id");
+      const payload = JSON.stringify({ localUserId: localUserId ? Number(localUserId) : undefined });
+      if (navigator.sendBeacon) {
+        const sent = navigator.sendBeacon("/api/presence/logout", new Blob([payload], { type: "application/json" }));
+        if (sent) return;
+      }
+      fetch("/api/presence/logout", {
+        method: "POST",
+        body: payload,
+        headers: { "content-type": "application/json" },
+        credentials: "include",
+        keepalive: true,
+      }).catch(() => undefined);
+    };
+    const logoutOnExit = () => {
+      sendPresenceLogout();
+      logout().catch(() => undefined);
+    };
+    const handleVisibility = () => {
+      if (document.visibilityState === "hidden") {
+        sendPresenceLogout();
+      } else {
+        heartbeatMutation.mutate();
+      }
+    };
+    window.addEventListener("pagehide", logoutOnExit);
+    window.addEventListener("beforeunload", logoutOnExit);
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("pagehide", logoutOnExit);
+      window.removeEventListener("beforeunload", logoutOnExit);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, [isAuthenticated, logout]);
 
   useEffect(() => {
     if (!roomError) return;

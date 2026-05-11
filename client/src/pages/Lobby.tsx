@@ -218,6 +218,7 @@ export default function Lobby() {
 
   const friends = friendsQuery.data ?? [];
   const onlinePlayers = availableUsersQuery.data?.filter((player: any) => player.isOnline) ?? [];
+  const emptyPublicRoomCards = roomFilter === "public" ? Math.max(0, 4 - rooms.length) : 0;
   const tier = getCompetitiveTier(rankingQuery.data?.totalPoints ?? 0);
   const theme = APPEARANCES[appearance];
 
@@ -236,11 +237,31 @@ export default function Lobby() {
     if (!isAuthenticated) return;
     heartbeatMutation.mutate();
     const timer = window.setInterval(() => heartbeatMutation.mutate(), 10_000);
+    const sendPresenceLogout = () => {
+      const localUserId = window.localStorage.getItem("domino_local_user_id");
+      const payload = JSON.stringify({ localUserId: localUserId ? Number(localUserId) : undefined });
+      if (navigator.sendBeacon) {
+        const sent = navigator.sendBeacon("/api/presence/logout", new Blob([payload], { type: "application/json" }));
+        if (sent) return;
+      }
+      fetch("/api/presence/logout", {
+        method: "POST",
+        body: payload,
+        headers: { "content-type": "application/json" },
+        credentials: "include",
+        keepalive: true,
+      }).catch(() => undefined);
+    };
     const logoutOnExit = () => {
+      sendPresenceLogout();
       logout().catch(() => undefined);
     };
     const handleVisibility = () => {
-      if (document.visibilityState === "visible") heartbeatMutation.mutate();
+      if (document.visibilityState === "hidden") {
+        sendPresenceLogout();
+      } else {
+        heartbeatMutation.mutate();
+      }
     };
     window.addEventListener("pagehide", logoutOnExit);
     window.addEventListener("beforeunload", logoutOnExit);
@@ -549,13 +570,20 @@ export default function Lobby() {
                 </div>
               )}
 
-              <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2 2xl:grid-cols-3">
+              <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2 2xl:grid-cols-4">
                 {rooms.length === 0 ? (
-                  <Card className={`col-span-full ${theme.card}`}>
-                    <CardContent className={`py-12 text-center ${theme.muted}`}>Nenhuma sala disponível agora. Crie uma sala ou atualize a lista.</CardContent>
-                  </Card>
+                  roomFilter === "public" ? (
+                    Array.from({ length: 4 }, (_, index) => (
+                      <RoomPlaceholder key={`public-placeholder-${index}`} theme={theme} index={index + 1} />
+                    ))
+                  ) : (
+                    <Card className={`col-span-full ${theme.card}`}>
+                      <CardContent className={`py-12 text-center ${theme.muted}`}>Nenhuma sala privada encontrada agora.</CardContent>
+                    </Card>
+                  )
                 ) : (
-                  rooms.map((room: any, idx: number) => {
+                  <>
+                  {rooms.map((room: any, idx: number) => {
                     const selectedPosition = selectedRooms[room.id] ?? null;
                     const waitingPosition = waitingRoom && waitingRoom.roomId === room.id ? waitingRoom.position : null;
 
@@ -593,7 +621,11 @@ export default function Lobby() {
                         }}
                       />
                     );
-                  })
+                  })}
+                  {Array.from({ length: emptyPublicRoomCards }, (_, index) => (
+                    <RoomPlaceholder key={`public-empty-${index}`} theme={theme} index={rooms.length + index + 1} />
+                  ))}
+                  </>
                 )}
               </div>
             </div>
@@ -668,6 +700,38 @@ function StatTile({ label, value, tone, appearance }: { label: string; value: st
   );
 }
 
+function RoomPlaceholder({ theme, index }: { theme: typeof APPEARANCES.light; index: number }) {
+  return (
+    <Card className={`shadow-lg ${theme.card}`}>
+      <CardContent className="p-2.5">
+        <div className="min-w-0 leading-tight">
+          <div className="truncate text-lg font-black">Mesa pública {index}</div>
+          <div className={`mt-0.5 flex items-center gap-2 text-xs ${theme.muted}`}>
+            <Globe2 className="h-3.5 w-3.5 text-emerald-300" />
+            Preparando sala
+          </div>
+        </div>
+        <div className="mt-3 flex items-center justify-between gap-3">
+          <div className="flex gap-1.5">
+            {[1, 2, 3, 4].map((position) => (
+              <div key={position} className="grid h-8 w-8 place-items-center rounded-md border border-dashed border-white/15 bg-white/5 text-xs font-black opacity-70">
+                {position}
+              </div>
+            ))}
+          </div>
+          <div className="text-right">
+            <div className="text-xl font-black">0/4</div>
+            <div className={`text-xs ${theme.muted}`}>online</div>
+          </div>
+        </div>
+        <Button className="mt-3 h-10 w-full bg-emerald-600/50 font-semibold" disabled>
+          Abrindo mesa...
+        </Button>
+      </CardContent>
+    </Card>
+  );
+}
+
 function RoomPanel({
   room,
   theme,
@@ -691,12 +755,16 @@ function RoomPanel({
     refetchInterval: 1000,
   });
   const waitingPlayers = roomPlayersQuery.data ?? [];
+  
+  // Filtrar bots para salas públicas (não devem aparecer em waiting)
+  const onlineHumanPlayers = waitingPlayers.filter((player: any) => !player?.isBot);
+  
   const slots = Array.from({ length: room.maxPlayers ?? 4 }, (_, index) => {
     const position = index + 1;
-    return waitingPlayers.find((player: any) => (player.seatPosition ?? player.id) === position);
+    return onlineHumanPlayers.find((player: any) => (player.seatPosition ?? player.id) === position);
   });
   
-  // Contar apenas jogadores online
+  // Contar apenas jogadores humanos online
   const onlinePlayersCount = slots.filter((player: any) => Boolean(player) && player?.isOnline).length;
   const isFull = onlinePlayersCount >= (room.maxPlayers ?? 4);
   const isLight = theme === APPEARANCES.light;
@@ -721,8 +789,8 @@ function RoomPanel({
           <div className="flex gap-1.5">
             {slots.map((player: any, index) => {
               const position = index + 1;
-              // Apenas considerar como preenchido se o jogador está online
-              const filled = Boolean(player) && player?.isOnline;
+              // Apenas considerar como preenchido se o jogador está online e é humano
+              const filled = Boolean(player) && player?.isOnline && !player?.isBot;
               const filledByCurrentUser = filled && player?.userId === currentUserId;
               const selected = selectedPosition === position;
               const waiting = waitingPosition === position;
@@ -751,9 +819,10 @@ function RoomPanel({
                         : "border-white/10 bg-white/5 text-slate-200 hover:border-emerald-300/50"
                 }`}
               >
+                <span className="absolute left-1 top-0.5 text-[9px] leading-none opacity-75">{position}</span>
                 {filled ? <Users className="h-3.5 w-3.5 text-emerald-100" /> : position}
-                <div className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-2 hidden min-w-28 -translate-x-1/2 whitespace-nowrap rounded-lg border border-emerald-300/20 bg-slate-950 px-2 py-1 text-xs font-semibold text-white shadow-xl group-hover:block group-focus:block">
-                  {filledByCurrentUser ? "Sua posição. Clique para sair." : selected ? "Posição selecionada" : filled ? "Posição ocupada" : label}
+                <div className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-2 hidden min-w-32 -translate-x-1/2 whitespace-nowrap rounded-lg border border-emerald-300/20 bg-slate-950 px-2 py-1 text-xs font-semibold text-white shadow-xl group-hover:block group-focus:block">
+                  {filledByCurrentUser ? "Sua posição. Clique para sair." : selected ? "Posição selecionada" : filled ? "Posição ocupada por jogador" : label}
                 </div>
               </button>
               );
@@ -766,7 +835,7 @@ function RoomPanel({
         </div>
 
           <Button className="mt-3 h-10 w-full bg-emerald-600 font-semibold hover:bg-emerald-500" disabled={isJoining || (!selectedIsCurrentWaiting && (isFull || !selectedPosition || selectedSlotBlocked))} onClick={onJoin}>
-          {selectedIsCurrentWaiting ? "Clique para sair desta posição" : isFull ? "Mesa cheia" : isJoining ? "Aguardando..." : selectedPosition ? `${isWaitingHere ? "Trocar para" : "Confirmar"} posição ${selectedPosition}` : "Clique em uma posição"}
+          {selectedIsCurrentWaiting ? "Clicar para sair desta posição" : isFull ? "Sala cheia" : isJoining ? "Aguardando..." : !selectedPosition ? "Selecione uma posição" : `${isWaitingHere ? "Trocar para" : "Entrar na"} posição ${selectedPosition}`}
         </Button>
       </CardContent>
     </Card>

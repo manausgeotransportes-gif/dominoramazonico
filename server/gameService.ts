@@ -30,6 +30,7 @@ const STANDARD_BOT_SLOTS = [
   { openId: "bot-padrao-1", name: "Bot Norte", email: "bot-padrao-1@domino.local" },
   { openId: "bot-padrao-2", name: "Bot Centro", email: "bot-padrao-2@domino.local" },
   { openId: "bot-padrao-3", name: "Bot Sul", email: "bot-padrao-3@domino.local" },
+  { openId: "bot-padrao-4", name: "Bot Oeste", email: "bot-padrao-4@domino.local" },
 ];
 
 async function ensureDbBotUser(slotIndex: number) {
@@ -295,7 +296,7 @@ function buildRoundReset(
     ...gameState,
     status: "playing",
     roundNumber: gameState.roundNumber + 1,
-    boardState: createEmptyBoardState(options.mode === "winnerAnyCarroca" ? "anyCarroca" : "sena"),
+    boardState: { ...createEmptyBoardState(options.mode === "winnerAnyCarroca" ? "anyCarroca" : "sena"), turnStartedAt: Date.now(), turnWarningAt: null } as BoardState,
     playerHands: hands,
     passCount: 0,
     announcements: [...(gameState.announcements ?? [])],
@@ -349,8 +350,8 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function maybeRunBotTurns(gameState: LocalGameState): Promise<LocalGameState> {
-  let current = gameState;
+async function maybeRunBotTurns(gameState: GameState | LocalGameState): Promise<GameState | LocalGameState> {
+  let current: GameState | LocalGameState = gameState;
   let guard = 0;
 
   while (current.status === "playing" && current.isBotPlayer[current.currentPlayerIndex] && guard < 30) {
@@ -361,7 +362,7 @@ async function maybeRunBotTurns(gameState: LocalGameState): Promise<LocalGameSta
 
     if (!move) {
       const passed = await passMove(current, current.currentPlayerIndex);
-      current = passed.gameState as LocalGameState;
+      current = passed.gameState;
       continue;
     }
 
@@ -375,7 +376,7 @@ async function maybeRunBotTurns(gameState: LocalGameState): Promise<LocalGameSta
 
     const announcedPoints = actualGalo ? 50 : tablePoints || undefined;
     const botResult = await playMove(current, current.currentPlayerIndex, move.domino, move.side, announcedPoints);
-    current = botResult.gameState as LocalGameState;
+    current = botResult.gameState;
   }
 
   return current;
@@ -443,7 +444,7 @@ export async function replaceTimedOutPlayerWithBot(gameState: GameState | LocalG
     await db.update(users).set({ isPlaying: false }).where(eq(users.id, current.userId));
     await db.update(games).set({ boardState: { ...boardState, turnStartedAt: nowMs, turnWarningAt: null } }).where(eq(games.id, gameState.gameId));
     const refreshed = await getGameState(gameState.gameId);
-    return refreshed ?? gameState;
+    return refreshed ? maybeRunBotTurns(refreshed) : gameState;
   }
 
   return gameState;
@@ -888,7 +889,7 @@ export async function playMove(
   const db = await getDb();
   if (db) {
     await db.update(games).set({
-      boardState: newBoardState,
+      boardState: updatedState.boardState,
       currentPlayerIndex: nextPlayerIndex,
       status: "playing",
     }).where(eq(games.id, gameState.gameId));
@@ -1106,7 +1107,8 @@ export async function getGameState(gameId: number): Promise<GameState | null> {
     lastMove: null,
     pendingGaloPlayerId: null,
   };
-  return replaceTimedOutPlayerWithBot(state) as Promise<GameState>;
+  const checked = (await replaceTimedOutPlayerWithBot(state)) as GameState;
+  return maybeRunBotTurns(checked);
 }
 
 /**

@@ -189,6 +189,10 @@ async function ensureDbAutoRoomsAvailable(minAvailable = 4) {
       allowBot: false,
     });
   }
+
+  if (missing > 0) {
+    console.log(`[AutoRooms] Criadas ${missing} salas. Total agora: ${publicWaitingRooms.length + missing}`);
+  }
 }
 
 export async function cleanupStaleOnlineUsers(maxAgeMs = 20_000) {
@@ -229,9 +233,9 @@ async function cleanupExpiredPrivateRoomsDb() {
 async function createDbBotUser(index: number) {
   const drizzle = await db.getDb();
   if (!drizzle) throw new Error("Banco indisponível");
-  const slot = ((index - 1) % 3) + 1;
+  const slot = ((index - 1) % 4) + 1;
   const openId = `bot-padrao-${slot}`;
-  const name = ["Bot Norte", "Bot Centro", "Bot Sul"][slot - 1] ?? `Bot Padrão ${slot}`;
+  const name = ["Bot Norte", "Bot Centro", "Bot Sul", "Bot Oeste"][slot - 1] ?? `Bot Padrão ${slot}`;
   const existing = await drizzle.select().from(users).where(eq(users.openId, openId)).limit(1);
   if (existing[0]) {
     await drizzle.update(users).set({ name, loginMethod: "bot", isOnline: true, isPlaying: true }).where(eq(users.id, existing[0].id));
